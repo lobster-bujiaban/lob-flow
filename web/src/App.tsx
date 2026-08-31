@@ -4,8 +4,9 @@ import type { App as FlowApp, DraftDefinition, ProviderConfig, WorkflowDefinitio
 import lobsterLogo from "./assets/lobster-logo.png";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { PluginMarketplace } from "./PluginMarketplace";
+import { KnowledgeBase } from "./KnowledgeBase";
 
-type Tab = "chat" | "workflow" | "plugins" | "settings";
+type Tab = "chat" | "workflow" | "knowledge" | "plugins" | "settings";
 
 export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -119,16 +120,17 @@ export function App() {
 
       <main className="main">
         <header className="topbar">
-          <div><div className="eyebrow">AI APPLICATION</div><h1>{activeApp?.name ?? "选择或创建应用"}</h1></div>
-          {activeApp && <div className="tabs">
+          <div><div className="eyebrow">AI APPLICATION</div><h1>{tab === "knowledge" ? "知识库" : activeApp?.name ?? "选择或创建应用"}</h1></div>
+          {workspaceId && <div className="tabs">
             <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button>
             <button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button>
+            <button className={tab === "knowledge" ? "active" : ""} onClick={() => setTab("knowledge")}>知识库</button>
             <button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>插件市场</button>
             <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button>
           </div>}
         </header>
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
-        {!activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
+        {tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
           <ChatPanel app={activeApp} onError={showError} />
         ) : tab === "workflow" ? (
           <WorkflowCanvas app={activeApp} workspaceId={workspaceId} providers={providers} onError={showError} />
@@ -261,7 +263,7 @@ function SettingsPanel(props: {
   </section>;
 }
 
-const nodeTypeLabel = { start: "START", template: "TEMPLATE", llm: "LLM", tool: "TOOL", answer: "ANSWER" } as const;
+const nodeTypeLabel = { start: "START", template: "TEMPLATE", llm: "LLM", knowledge: "KNOWLEDGE", tool: "TOOL", answer: "ANSWER" } as const;
 
 function WorkflowPanel({ app, providers, onError }: { app: FlowApp; providers: ProviderConfig[]; onError: (reason: unknown) => void }) {
   const [definition, setDefinition] = useState<WorkflowDefinition | null>(null);

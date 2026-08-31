@@ -17,6 +17,8 @@ from lob_flow.models import (
 )
 from lob_flow.provider import ModelGateway, ProviderError
 from lob_flow.plugin_service import PluginExecutionError, PluginService
+from lob_flow.knowledge_service import KnowledgeService
+from lob_flow.models import RetrievalRequest
 from lob_flow.service import NotFoundError, now
 from lob_flow.workflow import WorkflowValidationError, default_workflow, validate_and_sort
 
@@ -26,6 +28,7 @@ class WorkflowService:
         self.database = database
         self.model_gateway = model_gateway
         self.plugin_service: PluginService | None = None
+        self.knowledge_service: KnowledgeService | None = None
 
     def get_draft(self, app_id: str) -> WorkflowDraft:
         app = self._get_app(app_id)
@@ -54,6 +57,8 @@ class WorkflowService:
         for node in definition.nodes:
             if node.type == "llm":
                 self._validate_provider(app["workspace_id"], node.config["provider_config_id"])
+            elif node.type == "knowledge":
+                self._validate_dataset(app["workspace_id"], str(node.config["dataset_id"]))
         timestamp = now()
         with self.database.connect() as connection:
             connection.execute(
@@ -192,6 +197,22 @@ class WorkflowService:
                                 int((monotonic() - invocation_clock) * 1000),
                             ),
                         )
+                elif node.type == "knowledge":
+                    if self.knowledge_service is None:
+                        raise RuntimeError("Knowledge service is unavailable")
+                    query = str(node.config.get("query", "{input}")).replace("{input}", value)
+                    response = self.knowledge_service.retrieve(
+                        str(node.config["dataset_id"]),
+                        RetrievalRequest(
+                            query=query,
+                            top_k=int(node.config.get("top_k", 3)),
+                            score_threshold=float(node.config.get("score_threshold", 0)),
+                        ),
+                    )
+                    value = "\n\n".join(
+                        f"[知识片段 {index} | {item.document_name} | score {item.score:.4f}]\n{item.content}"
+                        for index, item in enumerate(response.results, 1)
+                    )
 
                 node_values[node.id] = value
 
@@ -351,6 +372,15 @@ class WorkflowService:
             ).fetchone()
         if row is None:
             raise WorkflowValidationError(["LLM 节点引用的模型配置不存在或不属于当前空间"])
+
+    def _validate_dataset(self, workspace_id: str, dataset_id: str) -> None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM datasets WHERE id = %s AND workspace_id = %s",
+                (dataset_id, workspace_id),
+            ).fetchone()
+        if row is None:
+            raise WorkflowValidationError(["Knowledge 节点引用的知识库不存在或不属于当前空间"])
 
     @staticmethod
     def _resolve_parameters(parameters: dict, value: str) -> dict:

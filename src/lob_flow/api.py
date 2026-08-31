@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from lob_flow.database import Database
 from lob_flow.dify_daemon import DifyDaemonClient, DifyDaemonError
 from lob_flow.dify_marketplace import DifyMarketplaceClient
+from lob_flow.knowledge_service import KnowledgeService
 from lob_flow.models import (
     App,
     AppCreate,
@@ -35,6 +36,8 @@ from lob_flow.models import (
     WorkflowRunCreate,
     Workspace,
     WorkspaceCreate,
+    Dataset, DatasetCreate, DatasetDocument, DocumentCreate, DocumentSegment,
+    EnableRequest, RetrievalRequest, RetrievalResponse, SegmentUpdate,
 )
 from lob_flow.plugin_service import PluginService
 from lob_flow.service import FlowService, NotFoundError
@@ -46,10 +49,12 @@ def create_app(database: Database | None = None) -> FastAPI:
     database = database or Database.from_env()
     service = FlowService(database)
     workflow_service = WorkflowService(database, service.model_gateway)
+    knowledge_service = KnowledgeService(database)
     plugin_service = PluginService(database, service.cipher)
     dify_daemon = DifyDaemonClient.from_env()
     dify_marketplace = DifyMarketplaceClient(dify_daemon)
     workflow_service.plugin_service = plugin_service
+    workflow_service.knowledge_service = knowledge_service
     web_dist = Path(__file__).resolve().parents[2] / "web" / "dist"
 
     @asynccontextmanager
@@ -115,6 +120,55 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.get("/api/workspaces/{workspace_id}/apps", response_model=list[App])
     def list_apps(workspace_id: str) -> list[App]:
         return service.list_apps(workspace_id)
+
+    @application.get("/api/workspaces/{workspace_id}/datasets", response_model=list[Dataset])
+    def list_datasets(workspace_id: str) -> list[Dataset]:
+        service.get_workspace(workspace_id)
+        return knowledge_service.list_datasets(workspace_id)
+
+    @application.post("/api/workspaces/{workspace_id}/datasets", response_model=Dataset, status_code=201)
+    def create_dataset(workspace_id: str, request: DatasetCreate) -> Dataset:
+        return knowledge_service.create_dataset(workspace_id, request)
+
+    @application.get("/api/datasets/{dataset_id}", response_model=Dataset)
+    def get_dataset(dataset_id: str) -> Dataset:
+        return knowledge_service.get_dataset(dataset_id)
+
+    @application.delete("/api/datasets/{dataset_id}", status_code=204)
+    def delete_dataset(dataset_id: str) -> None:
+        knowledge_service.delete_dataset(dataset_id)
+
+    @application.get("/api/datasets/{dataset_id}/documents", response_model=list[DatasetDocument])
+    def list_documents(dataset_id: str) -> list[DatasetDocument]:
+        return knowledge_service.list_documents(dataset_id)
+
+    @application.post("/api/datasets/{dataset_id}/documents", response_model=DatasetDocument, status_code=201)
+    def add_document(dataset_id: str, request: DocumentCreate) -> DatasetDocument:
+        return knowledge_service.add_document(dataset_id, request)
+
+    @application.put("/api/documents/{document_id}/enabled", response_model=DatasetDocument)
+    def enable_document(document_id: str, request: EnableRequest) -> DatasetDocument:
+        return knowledge_service.set_document_enabled(document_id, request.enabled)
+
+    @application.delete("/api/documents/{document_id}", status_code=204)
+    def delete_document(document_id: str) -> None:
+        knowledge_service.delete_document(document_id)
+
+    @application.get("/api/documents/{document_id}/segments", response_model=list[DocumentSegment])
+    def list_segments(document_id: str) -> list[DocumentSegment]:
+        return knowledge_service.list_segments(document_id)
+
+    @application.put("/api/segments/{segment_id}", response_model=DocumentSegment)
+    def update_segment(segment_id: str, request: SegmentUpdate) -> DocumentSegment:
+        return knowledge_service.update_segment(segment_id, request)
+
+    @application.put("/api/segments/{segment_id}/enabled", response_model=DocumentSegment)
+    def enable_segment(segment_id: str, request: EnableRequest) -> DocumentSegment:
+        return knowledge_service.set_segment_enabled(segment_id, request.enabled)
+
+    @application.post("/api/datasets/{dataset_id}/retrieve", response_model=RetrievalResponse)
+    def retrieve_dataset(dataset_id: str, request: RetrievalRequest) -> RetrievalResponse:
+        return knowledge_service.retrieve(dataset_id, request)
 
     @application.get(
         "/api/workspaces/{workspace_id}/model-provider-configs",

@@ -1,4 +1,4 @@
-import type { App, DraftDefinition, PluginCatalogItem, ProviderConfig, RunEvent, WorkflowDefinition, WorkflowDraft, WorkflowEvent, Workspace } from "./types";
+import type { App, Dataset, DatasetDocument, DocumentSegment, DraftDefinition, PluginCatalogItem, ProviderConfig, RetrievalResult, RunEvent, WorkflowDefinition, WorkflowDraft, WorkflowEvent, Workspace } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -22,6 +22,17 @@ export const api = {
     }),
   deleteWorkspace: (workspaceId: string) =>
     request<void>(`/api/workspaces/${workspaceId}`, { method: "DELETE" }),
+  listDatasets: (workspaceId: string) => request<Dataset[]>(`/api/workspaces/${workspaceId}/datasets`),
+  createDataset: (workspaceId: string, body: { name: string; description: string; icon: string }) => request<Dataset>(`/api/workspaces/${workspaceId}/datasets`, { method: "POST", body: JSON.stringify(body) }),
+  deleteDataset: (datasetId: string) => request<void>(`/api/datasets/${datasetId}`, { method: "DELETE" }),
+  listDocuments: (datasetId: string) => request<DatasetDocument[]>(`/api/datasets/${datasetId}/documents`),
+  addDocument: (datasetId: string, body: { name: string; content: string; separator?: string; max_chars?: number; overlap?: number }) => request<DatasetDocument>(`/api/datasets/${datasetId}/documents`, { method: "POST", body: JSON.stringify(body) }),
+  deleteDocument: (documentId: string) => request<void>(`/api/documents/${documentId}`, { method: "DELETE" }),
+  enableDocument: (documentId: string, enabled: boolean) => request<DatasetDocument>(`/api/documents/${documentId}/enabled`, { method: "PUT", body: JSON.stringify({ enabled }) }),
+  listSegments: (documentId: string) => request<DocumentSegment[]>(`/api/documents/${documentId}/segments`),
+  updateSegment: (segmentId: string, content: string) => request<DocumentSegment>(`/api/segments/${segmentId}`, { method: "PUT", body: JSON.stringify({ content }) }),
+  enableSegment: (segmentId: string, enabled: boolean) => request<DocumentSegment>(`/api/segments/${segmentId}/enabled`, { method: "PUT", body: JSON.stringify({ enabled }) }),
+  retrieveDataset: (datasetId: string, query: string, topK = 3) => request<{ query: string; results: RetrievalResult[]; duration_ms: number }>(`/api/datasets/${datasetId}/retrieve`, { method: "POST", body: JSON.stringify({ query, top_k: topK }) }),
   listApps: (workspaceId: string) =>
     request<App[]>(`/api/workspaces/${workspaceId}/apps`),
   createApp: (workspaceId: string, name: string) =>

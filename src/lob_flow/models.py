@@ -124,7 +124,7 @@ class RunEvent(BaseModel):
     created_at: datetime
 
 
-NodeType = Literal["start", "template", "llm", "tool", "answer"]
+NodeType = Literal["start", "template", "llm", "knowledge", "tool", "answer"]
 
 
 class WorkflowNode(BaseModel):
@@ -245,3 +245,91 @@ class PluginInstallation(BaseModel):
 
 class PluginEnableRequest(BaseModel):
     enabled: bool
+
+
+class DatasetCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=1000)
+    icon: str = Field(default="📖", max_length=20)
+
+
+class Dataset(BaseModel):
+    id: str
+    workspace_id: str
+    name: str
+    description: str
+    icon: str
+    indexing_technique: str
+    search_method: str
+    top_k: int
+    score_threshold: float
+    document_count: int = 0
+    segment_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class DocumentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    content: str = Field(min_length=1, max_length=2_000_000)
+    separator: str = Field(default="\n\n", max_length=20)
+    max_chars: int = Field(default=1200, ge=100, le=10_000)
+    overlap: int = Field(default=150, ge=0, le=2000)
+
+
+class DatasetDocument(BaseModel):
+    id: str
+    dataset_id: str
+    name: str
+    status: str
+    word_count: int
+    segment_count: int
+    enabled: bool
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class EnableRequest(BaseModel):
+    enabled: bool
+
+
+class SegmentUpdate(BaseModel):
+    content: str = Field(min_length=1, max_length=50_000)
+
+
+class DocumentSegment(BaseModel):
+    id: str
+    dataset_id: str
+    document_id: str
+    document_name: str = ""
+    position: int
+    content: str
+    word_count: int
+    token_count: int
+    keywords: list[str] = Field(default_factory=list)
+    enabled: bool
+    hit_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class RetrievalRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=20_000)
+    top_k: int | None = Field(default=None, ge=1, le=20)
+    score_threshold: float | None = Field(default=None, ge=0, le=1)
+
+
+class RetrievalResult(BaseModel):
+    segment_id: str
+    document_id: str
+    document_name: str
+    content: str
+    position: int
+    score: float
+
+
+class RetrievalResponse(BaseModel):
+    query: str
+    results: list[RetrievalResult]
+    duration_ms: int

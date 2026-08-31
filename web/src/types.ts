@@ -42,7 +42,7 @@ export interface RunEvent {
   data: Record<string, unknown>;
 }
 
-export type WorkflowNodeType = "start" | "template" | "llm" | "tool" | "answer";
+export type WorkflowNodeType = "start" | "template" | "llm" | "knowledge" | "tool" | "answer";
 
 export interface WorkflowNode {
   id: string;
@@ -97,4 +97,25 @@ export interface PluginCatalogItem {
   enabled: boolean;
   installation_id: string | null;
   has_credentials: boolean;
+}
+
+export interface Dataset {
+  id: string; workspace_id: string; name: string; description: string; icon: string;
+  indexing_technique: string; search_method: string; top_k: number; score_threshold: number;
+  document_count: number; segment_count: number; created_at: string; updated_at: string;
+}
+
+export interface DatasetDocument {
+  id: string; dataset_id: string; name: string; status: string; word_count: number;
+  segment_count: number; enabled: boolean; error: string | null; created_at: string; updated_at: string;
+}
+
+export interface DocumentSegment {
+  id: string; dataset_id: string; document_id: string; document_name: string; position: number;
+  content: string; word_count: number; token_count: number; keywords: string[];
+  enabled: boolean; hit_count: number; created_at: string; updated_at: string;
+}
+
+export interface RetrievalResult {
+  segment_id: string; document_id: string; document_name: string; content: string; position: number; score: number;
 }
