@@ -5,8 +5,9 @@ import lobsterLogo from "./assets/lobster-logo.png";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { PluginMarketplace } from "./PluginMarketplace";
 import { KnowledgeBase } from "./KnowledgeBase";
+import { ToolsLibrary } from "./ToolsLibrary";
 
-type Tab = "chat" | "workflow" | "knowledge" | "plugins" | "settings";
+type Tab = "chat" | "workflow" | "knowledge" | "tools" | "plugins" | "settings";
 
 export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -120,17 +121,18 @@ export function App() {
 
       <main className="main">
         <header className="topbar">
-          <div><div className="eyebrow">AI APPLICATION</div><h1>{tab === "knowledge" ? "知识库" : activeApp?.name ?? "选择或创建应用"}</h1></div>
+          <div><div className="eyebrow">AI APPLICATION</div><h1>{tab === "knowledge" ? "知识库" : tab === "tools" ? "工具" : activeApp?.name ?? "选择或创建应用"}</h1></div>
           {workspaceId && <div className="tabs">
             <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button>
             <button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button>
             <button className={tab === "knowledge" ? "active" : ""} onClick={() => setTab("knowledge")}>知识库</button>
+            <button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>工具</button>
             <button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>插件市场</button>
             <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button>
           </div>}
         </header>
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
-        {tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
+        {tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : tab === "tools" ? <ToolsLibrary workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
           <ChatPanel app={activeApp} onError={showError} />
         ) : tab === "workflow" ? (
           <WorkflowCanvas app={activeApp} workspaceId={workspaceId} providers={providers} onError={showError} />
