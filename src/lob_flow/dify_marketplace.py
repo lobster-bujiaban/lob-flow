@@ -100,7 +100,9 @@ class DifyMarketplaceClient:
         uploaded_identifier = data.get("unique_identifier") if isinstance(data, dict) else None
         if not uploaded_identifier:
             raise DifyDaemonError("Daemon did not return plugin identifier")
-        installation = self.daemon.install_identifier(tenant_id, str(uploaded_identifier))
+        installation = self.daemon.install_identifier(
+            tenant_id, str(uploaded_identifier), source="marketplace"
+        )
         return {"identifier": uploaded_identifier, "installation": installation.get("data", installation)}
 
     def _load_snapshot(self) -> list[dict]:

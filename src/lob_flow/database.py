@@ -47,7 +47,13 @@ class Database:
         for attempt in range(3):
             try:
                 connection = psycopg.connect(
-                    self.conninfo, row_factory=dict_row, connect_timeout=10
+                    self.conninfo,
+                    row_factory=dict_row,
+                    connect_timeout=10,
+                    keepalives=1,
+                    keepalives_idle=15,
+                    keepalives_interval=5,
+                    keepalives_count=3,
                 )
                 break
             except psycopg.OperationalError as exc:

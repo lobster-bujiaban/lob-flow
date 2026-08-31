@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import psycopg
 import socket
 import time
 from collections.abc import Iterator
@@ -163,13 +164,28 @@ class ModelGateway:
                 "provider_config_missing",
                 "Configure a real model provider before running the app",
             )
-        with self.database.connect() as connection:
-            row = connection.execute(
-                """SELECT base_url, api_key_encrypted
-                   FROM model_provider_configs
-                   WHERE id = %s AND workspace_id = %s""",
-                (config_id, workspace_id),
-            ).fetchone()
+        row = None
+        last_error: psycopg.OperationalError | None = None
+        for attempt in range(3):
+            try:
+                with self.database.connect() as connection:
+                    row = connection.execute(
+                        """SELECT base_url, api_key_encrypted
+                           FROM model_provider_configs
+                           WHERE id = %s AND workspace_id = %s""",
+                        (config_id, workspace_id),
+                    ).fetchone()
+                last_error = None
+                break
+            except psycopg.OperationalError as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.4 * (attempt + 1))
+        if last_error is not None and row is None:
+            raise ProviderError(
+                "database_unavailable",
+                "PostgreSQL 连接暂时中断，模型配置读取失败，请稍后重试。",
+            ) from last_error
         if row is None:
             raise ProviderError(
                 "provider_config_not_found",

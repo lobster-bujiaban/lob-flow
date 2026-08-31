@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import psycopg
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from time import monotonic
+from time import monotonic, sleep
 from uuid import uuid4
 
 from lob_flow.database import Database
@@ -11,10 +12,12 @@ from lob_flow.encryption import CredentialCipher
 from lob_flow.models import (
     App,
     AppCreate,
+    AppUpdate,
     DraftDefinition,
     ModelProviderConfig,
     ModelProviderConfigCreate,
     ModelProviderConfigUpdate,
+    ModelProviderSecret,
     Run,
     RunEvent,
     Workspace,
@@ -64,11 +67,24 @@ class FlowService:
             connection.execute("DELETE FROM workspaces WHERE id = %s", (workspace_id,))
 
     def create_app(self, workspace_id: str, request: AppCreate) -> App:
+        last_error: psycopg.OperationalError | None = None
+        app_id = str(uuid4())
+        for attempt in range(3):
+            try:
+                return self._create_app_once(workspace_id, request, app_id)
+            except psycopg.OperationalError as exc:
+                last_error = exc
+                if attempt < 2:
+                    sleep(0.4 * (attempt + 1))
+        assert last_error is not None
+        raise last_error
+
+    def _create_app_once(self, workspace_id: str, request: AppCreate, app_id: str) -> App:
         self.get_workspace(workspace_id)
         self._validate_provider_reference(workspace_id, request.draft)
         timestamp = now()
         app = App(
-            id=str(uuid4()),
+            id=app_id,
             workspace_id=workspace_id,
             name=request.name,
             description=request.description,
@@ -81,7 +97,8 @@ class FlowService:
             connection.execute(
                 """INSERT INTO apps
                    (id, workspace_id, name, description, app_type, draft_json, created_at, updated_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (id) DO NOTHING""",
                 (
                     app.id,
                     app.workspace_id,
@@ -99,6 +116,40 @@ class FlowService:
         self.get_app(app_id)
         with self.database.connect() as connection:
             self._delete_app(connection, app_id)
+
+    def update_app(self, app_id: str, request: AppUpdate) -> App:
+        self.get_app(app_id)
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE apps SET name = %s, description = %s, app_type = %s,
+                   updated_at = %s WHERE id = %s""",
+                (request.name.strip(), request.description.strip(), request.app_type, now().isoformat(), app_id),
+            )
+        return self.get_app(app_id)
+
+    def duplicate_app(self, app_id: str) -> App:
+        source = self.get_app(app_id)
+        duplicated = self.create_app(
+            source.workspace_id,
+            AppCreate(
+                name=f"{source.name} 副本",
+                description=source.description,
+                app_type=source.app_type,
+                draft=source.draft,
+            ),
+        )
+        with self.database.connect() as connection:
+            workflow = connection.execute(
+                "SELECT definition_json FROM workflow_drafts WHERE app_id = %s",
+                (app_id,),
+            ).fetchone()
+            if workflow:
+                connection.execute(
+                    """INSERT INTO workflow_drafts (app_id, definition_json, updated_at)
+                       VALUES (%s, %s, %s)""",
+                    (duplicated.id, workflow["definition_json"], now().isoformat()),
+                )
+        return duplicated
 
     @staticmethod
     def _delete_app(connection, app_id: str) -> None:
@@ -172,6 +223,19 @@ class FlowService:
         if row is None:
             raise NotFoundError(f"Model provider config {config_id} not found")
         return ModelProviderConfig(**dict(row), has_api_key=True)
+
+    def get_model_provider_secret(
+        self, workspace_id: str, config_id: str
+    ) -> ModelProviderSecret:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """SELECT api_key_encrypted FROM model_provider_configs
+                   WHERE id = %s AND workspace_id = %s""",
+                (config_id, workspace_id),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"Model provider config {config_id} not found")
+        return ModelProviderSecret(api_key=self.cipher.decrypt(row["api_key_encrypted"]))
 
     def update_model_provider_config(
         self,

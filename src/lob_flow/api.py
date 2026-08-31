@@ -17,10 +17,12 @@ from lob_flow.knowledge_service import KnowledgeService
 from lob_flow.models import (
     App,
     AppCreate,
+    AppUpdate,
     DraftDefinition,
     ModelProviderConfig,
     ModelProviderConfigCreate,
     ModelProviderConfigUpdate,
+    ModelProviderSecret,
     PluginCatalogItem,
     PluginEnableRequest,
     PluginInstallRequest,
@@ -83,11 +85,17 @@ def create_app(database: Database | None = None) -> FastAPI:
 
     @application.exception_handler(DifyDaemonError)
     async def dify_daemon_handler(_, exc: DifyDaemonError):
-        return JSONResponse(status_code=502, content={"detail": str(exc)})
+        message = str(exc)
+        if "no such file" in message.lower():
+            message = "插件安装包临时文件不存在，请重新点击安装；如果仍然失败，请重启 Plugin Daemon 后重试。"
+        return JSONResponse(status_code=502, content={"detail": message})
 
     @application.exception_handler(psycopg.OperationalError)
     async def database_connection_handler(_, exc: psycopg.OperationalError):
-        return JSONResponse(status_code=503, content={"detail": f"PostgreSQL 连接失败：{exc}"})
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "PostgreSQL 连接暂时中断，系统已自动重试，请稍后再次操作。"},
+        )
 
     @application.get("/health")
     def health() -> dict[str, str]:
@@ -176,6 +184,15 @@ def create_app(database: Database | None = None) -> FastAPI:
     )
     def list_model_provider_configs(workspace_id: str) -> list[ModelProviderConfig]:
         return service.list_model_provider_configs(workspace_id)
+
+    @application.get(
+        "/api/workspaces/{workspace_id}/model-provider-configs/{config_id}/secret",
+        response_model=ModelProviderSecret,
+    )
+    def get_model_provider_secret(
+        workspace_id: str, config_id: str
+    ) -> ModelProviderSecret:
+        return service.get_model_provider_secret(workspace_id, config_id)
 
     @application.post(
         "/api/workspaces/{workspace_id}/model-provider-configs",
@@ -277,6 +294,14 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.delete("/api/apps/{app_id}", status_code=204)
     def delete_chat_app(app_id: str) -> None:
         service.delete_app(app_id)
+
+    @application.put("/api/apps/{app_id}", response_model=App)
+    def update_chat_app(app_id: str, request: AppUpdate) -> App:
+        return service.update_app(app_id, request)
+
+    @application.post("/api/apps/{app_id}/duplicate", response_model=App, status_code=201)
+    def duplicate_chat_app(app_id: str) -> App:
+        return service.duplicate_app(app_id)
 
     @application.put("/api/apps/{app_id}/draft", response_model=App)
     def update_draft(app_id: str, request: DraftDefinition) -> App:

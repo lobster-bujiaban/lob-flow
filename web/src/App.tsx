@@ -18,6 +18,18 @@ const appTypes: Array<{ id: AppType; label: string; icon: string; description: s
   { id: "text_generation", label: "文本生成", icon: "T", description: "单次输入、结构化生成文本" }
 ];
 
+const providerPresets = [
+  { id: "openai", label: "OpenAI", icon: "OA", baseUrl: "https://api.openai.com/v1", model: "gpt-5.4" },
+  { id: "deepseek", label: "DeepSeek", icon: "DS", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat" },
+  { id: "qwen", label: "通义千问", icon: "QW", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus" },
+  { id: "zhipu", label: "智谱 GLM", icon: "GL", baseUrl: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.5" },
+  { id: "moonshot", label: "Moonshot", icon: "KM", baseUrl: "https://api.moonshot.cn/v1", model: "kimi-k2.5" },
+  { id: "siliconflow", label: "SiliconFlow", icon: "SF", baseUrl: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen3-8B" },
+  { id: "openrouter", label: "OpenRouter", icon: "OR", baseUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-4.1" },
+  { id: "groq", label: "Groq", icon: "GQ", baseUrl: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
+  { id: "ollama", label: "Ollama", icon: "OL", baseUrl: "http://127.0.0.1:11434/v1", model: "llama3.2" }
+] as const;
+
 export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState("");
@@ -28,6 +40,8 @@ export function App() {
   const [error, setError] = useState("");
   const [appFilter, setAppFilter] = useState<AppFilter>("all");
   const [showCreateApp, setShowCreateApp] = useState(false);
+  const [editingApp, setEditingApp] = useState<FlowApp | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<FlowApp | null>(null);
 
   const activeApp = useMemo(() => apps.find((item) => item.id === appId), [apps, appId]);
   const visibleApps = useMemo(() => appFilter === "all" ? apps : apps.filter((item) => item.app_type === appFilter), [apps, appFilter]);
@@ -51,7 +65,8 @@ export function App() {
   }, [workspaceId]);
 
   function showError(reason: unknown) {
-    setError(reason instanceof Error ? reason.message : String(reason));
+    const message = reason instanceof Error ? reason.message : String(reason);
+    setError(message.includes("provider_config_missing") ? "请先配置真实模型供应商和 API Key，再运行应用。" : message);
   }
 
   async function createWorkspace() {
@@ -99,12 +114,12 @@ export function App() {
   }
 
   async function deleteApp(item: FlowApp) {
-    if (!window.confirm(`确定删除应用“${item.name}”吗？\n相关工作流和全部运行记录都会永久删除。`)) return;
     try {
       await api.deleteApp(item.id);
       const remaining = apps.filter((app) => app.id !== item.id);
       setApps(remaining);
       if (appId === item.id) setAppId(remaining[0]?.id ?? "");
+      setDeleteTarget(null);
       setError("");
     } catch (reason) { showError(reason); }
   }
@@ -118,6 +133,29 @@ export function App() {
     setTab(item.app_type === "workflow" ? "workflow" : "chat");
   }
 
+  async function submitEditApp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!editingApp) return;
+    const data = new FormData(event.currentTarget);
+    try {
+      const updated = await api.updateApp(editingApp.id, { name: String(data.get("name")), description: String(data.get("description") ?? ""), app_type: String(data.get("app_type")) as AppType });
+      setApps((items) => items.map((item) => item.id === updated.id ? updated : item)); setEditingApp(null);
+    } catch (reason) { showError(reason); }
+  }
+
+  async function duplicateApp(item: FlowApp) {
+    try { const copy = await api.duplicateApp(item.id); setApps((items) => [...items, copy]); }
+    catch (reason) { showError(reason); }
+  }
+
+  async function exportDsl(item: FlowApp) {
+    try {
+      const workflow = await api.getWorkflow(item.id);
+      const content = JSON.stringify({ format: "lob-flow/v1", app: { name: item.name, description: item.description, app_type: item.app_type, draft: item.draft }, workflow: workflow.definition }, null, 2);
+      const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+      const anchor = document.createElement("a"); anchor.href = url; anchor.download = `${item.name.replace(/[^\w\u4e00-\u9fff-]+/g, "-")}.lobflow.json`; anchor.click(); URL.revokeObjectURL(url);
+    } catch (reason) { showError(reason); }
+  }
+
   return (
     <div className="dify-shell">
       <header className="global-header">
@@ -128,8 +166,8 @@ export function App() {
       <main className="main">
         {activeApp && ["chat", "workflow", "settings"].includes(tab) && <header className="app-header"><button className="app-back" onClick={() => setTab("studio")}>←</button><div className="app-header-title"><span>{appTypes.find((type) => type.id === activeApp.app_type)?.icon}</span><div><strong>{activeApp.name}</strong><small>{appTypes.find((type) => type.id === activeApp.app_type)?.label}</small></div></div><nav><button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button><button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button><button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button></nav></header>}
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
-        {tab === "studio" ? <Studio apps={visibleApps} allApps={apps} filter={appFilter} setFilter={setAppFilter} onCreate={createApp} onOpen={openApp} onDelete={deleteApp} onDeleteWorkspace={deleteWorkspace} disabled={!workspaceId} /> : tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : tab === "tools" ? <ToolsLibrary workspaceId={workspaceId} onError={showError} /> : tab === "plugins" ? <PluginMarketplace workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
-          <ChatPanel app={activeApp} onError={showError} />
+        {tab === "studio" ? <Studio apps={visibleApps} allApps={apps} filter={appFilter} setFilter={setAppFilter} onCreate={createApp} onOpen={openApp} onEdit={setEditingApp} onDuplicate={duplicateApp} onExport={exportDsl} onDelete={setDeleteTarget} onDeleteWorkspace={deleteWorkspace} disabled={!workspaceId} /> : tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : tab === "tools" ? <ToolsLibrary workspaceId={workspaceId} onError={showError} /> : tab === "plugins" ? <PluginMarketplace workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
+          <ChatPanel app={activeApp} providers={providers} onSettings={() => setTab("settings")} onError={showError} />
         ) : tab === "workflow" ? (
           <WorkflowCanvas app={activeApp} workspaceId={workspaceId} providers={providers} onError={showError} />
         ) : (
@@ -144,30 +182,35 @@ export function App() {
         )}
       </main>
       {showCreateApp && <div className="modal-backdrop"><form className="modal app-create-modal" onSubmit={submitCreateApp}><div className="modal-head"><div><h3>创建应用</h3><p>应用类型决定默认运行方式，创建后仍可使用工作流编排。</p></div><button type="button" onClick={() => setShowCreateApp(false)}>×</button></div><label>应用名称</label><input name="name" required autoFocus placeholder="例如：客户支持 Agent" /><label>应用类型</label><div className="app-type-options">{appTypes.map((type, index) => <label key={type.id}><input type="radio" name="app_type" value={type.id} defaultChecked={index === 1} /><span><i>{type.icon}</i><strong>{type.label}</strong><small>{type.description}</small></span></label>)}</div><button className="primary wide">创建应用</button></form></div>}
+      {editingApp && <div className="modal-backdrop"><form className="modal" onSubmit={submitEditApp}><div className="modal-head"><div><h3>编辑应用信息</h3><p>修改名称、描述和应用分类。</p></div><button type="button" onClick={() => setEditingApp(null)}>×</button></div><label>应用名称</label><input name="name" defaultValue={editingApp.name} required /><label>应用类型</label><select name="app_type" defaultValue={editingApp.app_type}>{appTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}</select><label>应用描述</label><textarea name="description" rows={4} defaultValue={editingApp.description} /><button className="primary wide">保存修改</button></form></div>}
+      {deleteTarget && <div className="modal-backdrop"><div className="modal confirm-modal"><div className="confirm-icon">!</div><h3>删除应用“{deleteTarget.name}”？</h3><p>相关工作流、运行记录和事件都会永久删除，此操作无法撤销。</p><div className="confirm-actions"><button onClick={() => setDeleteTarget(null)}>取消</button><button className="confirm-delete" onClick={() => deleteApp(deleteTarget)}>确认删除</button></div></div></div>}
     </div>
   );
 }
 
-function Studio({ apps, allApps, filter, setFilter, onCreate, onOpen, onDelete, onDeleteWorkspace, disabled }: { apps: FlowApp[]; allApps: FlowApp[]; filter: AppFilter; setFilter: (value: AppFilter) => void; onCreate: () => void; onOpen: (app: FlowApp) => void; onDelete: (app: FlowApp) => void; onDeleteWorkspace: () => void; disabled: boolean }) {
+function Studio({ apps, allApps, filter, setFilter, onCreate, onOpen, onEdit, onDuplicate, onExport, onDelete, onDeleteWorkspace, disabled }: { apps: FlowApp[]; allApps: FlowApp[]; filter: AppFilter; setFilter: (value: AppFilter) => void; onCreate: () => void; onOpen: (app: FlowApp) => void; onEdit: (app: FlowApp) => void; onDuplicate: (app: FlowApp) => void; onExport: (app: FlowApp) => void; onDelete: (app: FlowApp) => void; onDeleteWorkspace: () => void; disabled: boolean }) {
   const [search, setSearch] = useState("");
   const [mineOnly, setMineOnly] = useState(false);
+  const [menuId, setMenuId] = useState("");
   const visible = apps.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()));
-  return <section className="studio-wrap"><div className="studio-controls"><nav><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>▦ 全部</button>{appTypes.map((type) => <button key={type.id} className={filter === type.id ? "active" : ""} onClick={() => setFilter(type.id)}>{type.icon} {type.label}</button>)}</nav><div><label className="mine-filter"><input type="checkbox" checked={mineOnly} onChange={(event) => setMineOnly(event.target.checked)} />我创建的</label><select className="tag-filter"><option>◇ 全部标签</option></select><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="⌕ 搜索" /><button className="studio-space-menu" onClick={onDeleteWorkspace} disabled={disabled}>•••</button></div></div><div className="studio-grid"><article className="studio-create-card"><strong>创建应用</strong><button onClick={onCreate} disabled={disabled}><span>＋</span><div>创建空白应用<small>选择类型，从零开始构建</small></div></button><button onClick={onCreate} disabled={disabled}><span>▤</span><div>从应用模板创建<small>使用预置场景快速开始</small></div></button><button onClick={onCreate} disabled={disabled}><span>↪</span><div>导入 DSL 文件<small>恢复或迁移已有应用</small></div></button></article>{visible.map((item) => { const type = appTypes.find((entry) => entry.id === item.app_type); return <article className="studio-card" key={item.id} onClick={() => onOpen(item)}><header><span>{type?.icon ?? "✦"}<b>{item.app_type === "workflow" ? "⌘" : "◉"}</b></span><div><h3>{item.name}</h3><small>LOB Flow · 编辑于 {new Date(item.updated_at).toLocaleDateString()}</small></div><button onClick={(event) => { event.stopPropagation(); onDelete(item); }}>•••</button></header><p>{item.description || type?.description}</p><footer><span>◇ 添加标签</span><i>{type?.label}</i></footer></article>; })}</div>{!visible.length && allApps.length > 0 && <div className="knowledge-empty">没有匹配的应用</div>}</section>;
+  return <section className="studio-wrap"><div className="studio-controls"><nav><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>▦ 全部</button>{appTypes.map((type) => <button key={type.id} className={filter === type.id ? "active" : ""} onClick={() => setFilter(type.id)}>{type.icon} {type.label}</button>)}</nav><div><label className="mine-filter"><input type="checkbox" checked={mineOnly} onChange={(event) => setMineOnly(event.target.checked)} />我创建的</label><select className="tag-filter"><option>◇ 全部标签</option></select><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="⌕ 搜索" /><button className="studio-space-menu" onClick={onDeleteWorkspace} disabled={disabled}>•••</button></div></div><div className="studio-grid"><article className="studio-create-card"><strong>创建应用</strong><button onClick={onCreate} disabled={disabled}><span>＋</span><div>创建空白应用<small>选择类型，从零开始构建</small></div></button><button onClick={onCreate} disabled={disabled}><span>▤</span><div>从应用模板创建<small>使用预置场景快速开始</small></div></button><button onClick={onCreate} disabled={disabled}><span>↪</span><div>导入 DSL 文件<small>恢复或迁移已有应用</small></div></button></article>{visible.map((item) => { const type = appTypes.find((entry) => entry.id === item.app_type); return <article className="studio-card" key={item.id} onClick={() => onOpen(item)}><header><span>{type?.icon ?? "✦"}<b>{item.app_type === "workflow" ? "⌘" : "◉"}</b></span><div><h3>{item.name}</h3><small>LOB Flow · 编辑于 {new Date(item.updated_at).toLocaleDateString()}</small></div><div className="studio-card-menu"><button onClick={(event) => { event.stopPropagation(); setMenuId((id) => id === item.id ? "" : item.id); }}>•••</button>{menuId === item.id && <div onClick={(event) => event.stopPropagation()}><button onClick={() => { onEdit(item); setMenuId(""); }}>编辑信息</button><button onClick={() => { onDuplicate(item); setMenuId(""); }}>复制</button><button onClick={() => { onExport(item); setMenuId(""); }}>导出 DSL</button><button onClick={() => { onOpen(item); setMenuId(""); }}>打开调试</button><button className="delete" onClick={() => { onDelete(item); setMenuId(""); }}>删除</button></div>}</div></header><p>{item.description || type?.description}</p><footer><span>◇ 添加标签</span><i>{type?.label}</i></footer></article>; })}</div>{!visible.length && allApps.length > 0 && <div className="knowledge-empty">没有匹配的应用</div>}</section>;
 }
 
 function Welcome({ onCreate, disabled }: { onCreate: () => void; disabled: boolean }) {
   return <div className="welcome"><div className="welcome-icon">⌁</div><h2>构建第一个 AI 应用</h2><p>先配置模型，再从一条真实对话开始理解应用运行链路。</p><button className="primary" onClick={onCreate} disabled={disabled}>创建应用</button></div>;
 }
 
-function ChatPanel({ app, onError }: { app: FlowApp; onError: (reason: unknown) => void }) {
+function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; providers: ProviderConfig[]; onSettings: () => void; onError: (reason: unknown) => void }) {
   const [input, setInput] = useState("");
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [running, setRunning] = useState(false);
   const [meta, setMeta] = useState("");
+  const hasProvider = !!app.draft.model.provider_config_id && providers.some((item) => item.id === app.draft.model.provider_config_id);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (!hasProvider) { onError("请先配置真实模型供应商和 API Key，再运行应用。"); return; }
     if (!input.trim() || running) return;
     const message = input.trim();
     setQuestion(message); setInput(""); setAnswer(""); setMeta(""); setRunning(true);
@@ -187,7 +230,8 @@ function ChatPanel({ app, onError }: { app: FlowApp; onError: (reason: unknown) 
     <div className="chat-stage">
       <div className="chat-heading"><div><h2>对话调试</h2><p>{app.draft.model.model}</p></div><span className="draft-badge">DRAFT</span></div>
       <div className="conversation">
-        {!question && !answer && !running && <div className="conversation-empty"><span>✦</span><h3>测试你的应用</h3><p>输入一条消息，观察模型输出和运行指标。</p></div>}
+        {!hasProvider && <div className="model-required"><span>AI</span><h3>还没有可用的真实模型</h3><p>配置 OpenAI-compatible API Key，并为当前应用选择模型后即可调试。</p><button className="primary" onClick={onSettings}>前往模型设置</button></div>}
+        {hasProvider && !question && !answer && !running && <div className="conversation-empty"><span>✦</span><h3>测试你的应用</h3><p>输入一条消息，观察模型输出和运行指标。</p></div>}
         {question && <div className="message user-message"><div><div className="bubble">{question}</div></div><div className="avatar user-avatar">你</div></div>}
         {(answer || running) && <div className="message ai-message"><div className="avatar ai-avatar"><img src={lobsterLogo} alt="LOB AI" /></div><div><div className="bubble">{answer || <span className="typing">正在思考</span>}</div>{meta && <div className="message-meta">{meta}</div>}</div></div>}
       </div>
@@ -204,7 +248,7 @@ function ChatPanel({ app, onError }: { app: FlowApp; onError: (reason: unknown) 
           placeholder="输入消息，Enter 发送，Shift + Enter 换行…"
           rows={3}
         />
-        <button className="send" disabled={running || !input.trim()}>{running ? "运行中" : "发送"}</button>
+        <button className="send" disabled={!hasProvider || running || !input.trim()}>{running ? "运行中" : "发送"}</button>
       </form>
     </div>
   </section>;
@@ -219,8 +263,23 @@ function SettingsPanel(props: {
   const [draft, setDraft] = useState<DraftDefinition>(app.draft);
   const [showCredential, setShowCredential] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [editingProvider, setEditingProvider] = useState<ProviderConfig | null>(null);
+  const [credentialKey, setCredentialKey] = useState("");
+  const [showCredentialKey, setShowCredentialKey] = useState(false);
+  const [credentialName, setCredentialName] = useState("OpenAI");
+  const [credentialBaseUrl, setCredentialBaseUrl] = useState("https://api.openai.com/v1");
+  const [credentialModel, setCredentialModel] = useState("gpt-5.4");
+  const [providerPreset, setProviderPreset] = useState("openai");
 
-  useEffect(() => setDraft(app.draft), [app]);
+  useEffect(() => {
+    if (!app.draft.model.provider_config_id && providers[0]) {
+      const nextDraft = { ...app.draft, model: { ...app.draft.model, provider_config_id: providers[0].id } };
+      setDraft(nextDraft);
+      api.updateDraft(app.id, nextDraft).then(onSaved).catch(onError);
+    } else {
+      setDraft(app.draft);
+    }
+  }, [app, providers]);
 
   async function save() {
     setSaving(true);
@@ -229,18 +288,38 @@ function SettingsPanel(props: {
     finally { setSaving(false); }
   }
 
-  async function createCredential(event: FormEvent<HTMLFormElement>) {
+  function openNewProvider() {
+    const preset = providerPresets[0];
+    setEditingProvider(null); setCredentialKey(""); setShowCredentialKey(false); setProviderPreset(preset.id); setCredentialName(preset.label); setCredentialBaseUrl(preset.baseUrl); setCredentialModel(preset.model); setShowCredential(true);
+  }
+
+  async function openProvider(item: ProviderConfig) {
+    setEditingProvider(item); setCredentialKey(""); setShowCredentialKey(false); setProviderPreset(""); setCredentialName(item.name); setCredentialBaseUrl(item.base_url); setCredentialModel(draft.model.model || "gpt-5.4"); setShowCredential(true);
+    try { setCredentialKey((await api.revealProviderKey(workspaceId, item.id)).api_key); }
+    catch (reason) { onError(`现有密钥读取失败，仍可输入新密钥后保存：${reason instanceof Error ? reason.message : String(reason)}`); }
+  }
+
+  async function saveCredential(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
     try {
-      const created = await api.createProvider(workspaceId, {
-        name: String(data.get("name")), base_url: String(data.get("base_url")), api_key: String(data.get("api_key"))
-      });
-      const model = String(data.get("model"));
-      setProviders([...providers, created]);
-      setDraft((value) => ({ ...value, model: { ...value.model, provider: "openai_compatible", provider_config_id: created.id, model } }));
-      setShowCredential(false);
+      const body = { name: credentialName, base_url: credentialBaseUrl, api_key: credentialKey };
+      const created = editingProvider
+        ? await api.updateProvider(workspaceId, editingProvider.id, body)
+        : await api.createProvider(workspaceId, body);
+      const model = credentialModel;
+      setProviders(editingProvider ? providers.map((item) => item.id === created.id ? created : item) : [...providers, created]);
+      const appliesToDraft = !editingProvider || !draft.model.provider_config_id || draft.model.provider_config_id === editingProvider.id;
+      const nextDraft = appliesToDraft ? { ...draft, model: { ...draft.model, provider: "openai_compatible" as const, provider_config_id: created.id, model } } : draft;
+      setDraft(nextDraft);
+      if (appliesToDraft) onSaved(await api.updateDraft(app.id, nextDraft));
+      setShowCredential(false); setEditingProvider(null); setCredentialKey("");
     } catch (reason) { onError(reason); }
+  }
+
+  function applyProviderPreset(id: string) {
+    const preset = providerPresets.find((item) => item.id === id);
+    if (!preset) return;
+    setProviderPreset(id); setCredentialName(preset.label); setCredentialBaseUrl(preset.baseUrl); setCredentialModel(preset.model);
   }
 
   return <section className="settings-wrap">
@@ -251,7 +330,7 @@ function SettingsPanel(props: {
           <div><label>模型供应商</label><select value={draft.model.provider_config_id ?? ""} onChange={(e) => setDraft({ ...draft, model: { ...draft.model, provider_config_id: e.target.value || null } })}><option value="">请选择真实模型配置</option>{providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
           <div><label>模型名称</label><input value={draft.model.model} onChange={(e) => setDraft({ ...draft, model: { ...draft.model, model: e.target.value } })} /></div>
         </div>
-        {!providers.length && <button className="text-button provider-add" onClick={() => setShowCredential(true)}>＋ 添加真实模型配置</button>}
+        {!providers.length && <button className="text-button provider-add" onClick={openNewProvider}>＋ 添加真实模型配置</button>}
       </div>
       <div className="card form-grid">
         <div><label>System Prompt</label><textarea rows={5} value={draft.system_prompt} onChange={(e) => setDraft({ ...draft, system_prompt: e.target.value })} /></div>
@@ -259,11 +338,11 @@ function SettingsPanel(props: {
       </div>
     </div>
     <aside className="provider-panel">
-      <div className="panel-title compact"><div><h3>模型供应商</h3><p>API Key 加密保存</p></div><button className="icon-button" onClick={() => setShowCredential(true)}>＋</button></div>
-      {providers.map((item) => <div className="provider-item" key={item.id}><div className="provider-logo">AI</div><div><strong>{item.name}</strong><span>{item.base_url}</span></div><span className="secure">已加密</span></div>)}
+      <div className="panel-title compact"><div><h3>模型供应商</h3><p>API Key 加密保存</p></div><button className="icon-button" onClick={openNewProvider}>＋</button></div>
+      {providers.map((item) => <button className="provider-item provider-edit" key={item.id} onClick={() => openProvider(item)}><div className="provider-logo">AI</div><div><strong>{item.name}</strong><span>{item.base_url}</span></div><span className="secure">编辑 ›</span></button>)}
       {!providers.length && <div className="empty-provider">尚未配置真实模型</div>}
     </aside>
-    {showCredential && <div className="modal-backdrop"><form className="modal" onSubmit={createCredential}><div className="modal-head"><div><h3>添加 OpenAI 配置</h3><p>OpenAI Chat Completions API</p></div><button type="button" onClick={() => setShowCredential(false)}>×</button></div><label>配置名称</label><input name="name" placeholder="例如：OpenAI" required /><label>Base URL</label><input name="base_url" defaultValue="https://api.openai.com/v1" required /><label>模型名称</label><input name="model" defaultValue="gpt-5.4" required /><label>API Key</label><input name="api_key" type="password" autoComplete="new-password" placeholder="仅在提交时传给后端" required /><div className="security-note">🔒 密钥由服务端加密，保存后不会再次返回明文。</div><button className="primary wide">保存配置</button></form></div>}
+    {showCredential && <div className="modal-backdrop"><form className="modal provider-modal" onSubmit={saveCredential}><div className="modal-head"><div><h3>{editingProvider ? "API 密钥授权配置" : "添加模型配置"}</h3><p>{editingProvider ? "修改凭据后，当前空间中的应用会继续使用此配置。" : "选择常见厂商或填写任意 OpenAI-compatible API"}</p></div><button type="button" onClick={() => setShowCredential(false)}>×</button></div><label>模型厂商</label><div className="provider-presets">{providerPresets.map((preset) => <button type="button" key={preset.id} className={providerPreset === preset.id ? "active" : ""} onClick={() => applyProviderPreset(preset.id)}><i>{preset.icon}</i><span>{preset.label}</span></button>)}</div><label>配置名称</label><input value={credentialName} onChange={(event) => setCredentialName(event.target.value)} placeholder="例如：OpenAI" required /><label>API Key</label><div className="secret-input"><input value={credentialKey} onChange={(event) => setCredentialKey(event.target.value)} type={showCredentialKey ? "text" : "password"} autoComplete="off" placeholder={editingProvider ? "正在解密…" : providerPreset === "ollama" ? "Ollama 可填写任意非空值" : "输入 API Key"} required /><button type="button" onClick={() => setShowCredentialKey((visible) => !visible)}>{showCredentialKey ? "隐藏" : "显示"}</button></div><label>Base URL</label><input value={credentialBaseUrl} onChange={(event) => { setCredentialBaseUrl(event.target.value); setProviderPreset(""); }} required /><label>模型名称</label><input value={credentialModel} onChange={(event) => setCredentialModel(event.target.value)} required /><div className="security-note">🔒 密钥仅在你主动编辑时解密显示，提交后仍以加密形式保存。</div><button className="primary wide">{editingProvider ? "保存修改" : "保存配置"}</button></form></div>}
   </section>;
 }
 

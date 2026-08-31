@@ -40,6 +40,12 @@ class AppCreate(BaseModel):
     draft: DraftDefinition = Field(default_factory=DraftDefinition)
 
 
+class AppUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+    app_type: AppType
+
+
 class App(BaseModel):
     id: str
     workspace_id: str
@@ -72,6 +78,10 @@ class ModelProviderConfig(BaseModel):
     has_api_key: bool = True
     created_at: datetime
     updated_at: datetime
+
+
+class ModelProviderSecret(BaseModel):
+    api_key: str
 
 
 class PublishedVersion(BaseModel):

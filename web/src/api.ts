@@ -42,6 +42,10 @@ export const api = {
     }),
   deleteApp: (appId: string) =>
     request<void>(`/api/apps/${appId}`, { method: "DELETE" }),
+  updateApp: (appId: string, body: { name: string; description: string; app_type: AppType }) =>
+    request<App>(`/api/apps/${appId}`, { method: "PUT", body: JSON.stringify(body) }),
+  duplicateApp: (appId: string) =>
+    request<App>(`/api/apps/${appId}/duplicate`, { method: "POST" }),
   updateDraft: (appId: string, draft: DraftDefinition) =>
     request<App>(`/api/apps/${appId}/draft`, {
       method: "PUT",
@@ -56,6 +60,12 @@ export const api = {
     request<ProviderConfig>(`/api/workspaces/${workspaceId}/model-provider-configs`, {
       method: "POST",
       body: JSON.stringify(body)
+    }),
+  revealProviderKey: (workspaceId: string, configId: string) =>
+    request<{ api_key: string }>(`/api/workspaces/${workspaceId}/model-provider-configs/${configId}/secret`),
+  updateProvider: (workspaceId: string, configId: string, body: { name: string; base_url: string; api_key?: string }) =>
+    request<ProviderConfig>(`/api/workspaces/${workspaceId}/model-provider-configs/${configId}`, {
+      method: "PUT", body: JSON.stringify(body)
     }),
   listPlugins: (workspaceId: string) =>
     request<PluginCatalogItem[]>(`/api/workspaces/${workspaceId}/plugins`),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import psycopg
 from collections.abc import Iterator
 from time import monotonic
 from uuid import uuid4
@@ -257,24 +258,34 @@ class WorkflowService:
                 run_id, sequence, "workflow_succeeded", None, {"output": value, "duration_ms": duration}
             )
         except Exception as exc:
-            error_code = exc.code if isinstance(exc, ProviderError) else (
-                "plugin_error" if isinstance(exc, PluginExecutionError) else "workflow_error"
+            is_database_error = isinstance(exc, psycopg.OperationalError)
+            error_code = "database_unavailable" if is_database_error else (
+                exc.code if isinstance(exc, ProviderError) else (
+                    "plugin_error" if isinstance(exc, PluginExecutionError) else "workflow_error"
+                )
+            )
+            error_message = (
+                "PostgreSQL 连接暂时中断，工作流已停止，请稍后重新运行。"
+                if is_database_error else str(exc)
             )
             duration = int((monotonic() - run_started) * 1000)
-            with self.database.connect() as connection:
-                if current_node_run_id:
+            try:
+                with self.database.connect() as connection:
+                    if current_node_run_id:
+                        connection.execute(
+                            """UPDATE node_runs
+                               SET status = 'failed', error = %s, finished_at = %s
+                               WHERE id = %s""",
+                            (error_message, now().isoformat(), current_node_run_id),
+                        )
                     connection.execute(
-                        """UPDATE node_runs
-                           SET status = 'failed', error = %s, finished_at = %s
-                           WHERE id = %s""",
-                        (str(exc), now().isoformat(), current_node_run_id),
+                        """UPDATE workflow_runs
+                           SET status = 'failed', error = %s, error_code = %s,
+                               finished_at = %s, duration_ms = %s WHERE id = %s""",
+                        (error_message, error_code, now().isoformat(), duration, run_id),
                     )
-                connection.execute(
-                    """UPDATE workflow_runs
-                       SET status = 'failed', error = %s, error_code = %s,
-                           finished_at = %s, duration_ms = %s WHERE id = %s""",
-                    (str(exc), error_code, now().isoformat(), duration, run_id),
-                )
+            except psycopg.OperationalError:
+                pass
             sequence += 1
             if current_node_id:
                 yield self._event(
@@ -282,7 +293,7 @@ class WorkflowService:
                     sequence,
                     "node_failed",
                     current_node_id,
-                    {"error": str(exc), "error_code": error_code},
+                    {"error": error_message, "error_code": error_code},
                 )
                 sequence += 1
             yield self._event(
@@ -290,7 +301,7 @@ class WorkflowService:
                 sequence,
                 "workflow_failed",
                 None,
-                {"error": str(exc), "error_code": error_code, "duration_ms": duration},
+                {"error": error_message, "error_code": error_code, "duration_ms": duration},
             )
 
     def get_run(self, run_id: str) -> WorkflowRun:
@@ -338,20 +349,23 @@ class WorkflowService:
             data=data,
             created_at=now(),
         )
-        with self.database.connect() as connection:
-            connection.execute(
-                """INSERT INTO workflow_events
-                   (workflow_run_id, sequence, type, node_id, data_json, created_at)
-                   VALUES (%s, %s, %s, %s, %s, %s)""",
-                (
-                    run_id,
-                    sequence,
-                    event_type,
-                    node_id,
-                    json.dumps(data, ensure_ascii=False),
-                    event.created_at.isoformat(),
-                ),
-            )
+        try:
+            with self.database.connect() as connection:
+                connection.execute(
+                    """INSERT INTO workflow_events
+                       (workflow_run_id, sequence, type, node_id, data_json, created_at)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    (
+                        run_id,
+                        sequence,
+                        event_type,
+                        node_id,
+                        json.dumps(data, ensure_ascii=False),
+                        event.created_at.isoformat(),
+                    ),
+                )
+        except psycopg.OperationalError:
+            pass
         return event
 
     def _get_app(self, app_id: str) -> dict:

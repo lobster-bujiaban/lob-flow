@@ -36,17 +36,22 @@ class DifyDaemonClient:
     def upload_package(self, tenant_id: str, package: bytes) -> dict:
         boundary = f"lob-{uuid.uuid4().hex}"
         body = (
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"pkg\"; filename=\"plugin.difypkg\"\r\n"
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"dify_pkg\"; filename=\"dify_pkg\"\r\n"
             "Content-Type: application/octet-stream\r\n\r\n"
-        ).encode() + package + f"\r\n--{boundary}--\r\n".encode()
+        ).encode() + package + (
+            f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"verify_signature\"\r\n\r\n"
+            f"true\r\n--{boundary}--\r\n"
+        ).encode()
         return self._request(
             tenant_id, "POST", "management/install/upload/package", body,
             f"multipart/form-data; boundary={boundary}",
         )
 
-    def install_identifier(self, tenant_id: str, identifier: str) -> dict:
+    def install_identifier(self, tenant_id: str, identifier: str, source: str = "package") -> dict:
         return self._json_request(tenant_id, "POST", "management/install/identifiers", {
-            "plugin_unique_identifiers": [identifier], "source": "package", "metas": [{}]
+            "plugin_unique_identifiers": [identifier],
+            "source": source,
+            "metas": [{"plugin_unique_identifier": identifier}],
         })
 
     def list_plugins(self, tenant_id: str) -> dict:
