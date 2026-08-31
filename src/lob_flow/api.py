@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from lob_flow.database import Database
 from lob_flow.models import (
     App,
     AppCreate,
     DraftDefinition,
+    ModelProviderConfig,
+    ModelProviderConfigCreate,
+    ModelProviderConfigUpdate,
     Run,
     RunCreate,
     RunEvent,
@@ -23,6 +29,7 @@ from lob_flow.service import FlowService, NotFoundError
 def create_app(database: Database | None = None) -> FastAPI:
     database = database or Database.from_env()
     service = FlowService(database)
+    web_dist = Path(__file__).resolve().parents[2] / "web" / "dist"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -30,6 +37,13 @@ def create_app(database: Database | None = None) -> FastAPI:
         yield
 
     application = FastAPI(title="LOB Flow", version="0.1.0", lifespan=lifespan)
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     application.state.service = service
 
     @application.exception_handler(NotFoundError)
@@ -40,19 +54,57 @@ def create_app(database: Database | None = None) -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @application.get("/", include_in_schema=False)
-    def index() -> RedirectResponse:
+    @application.get("/", include_in_schema=False, response_model=None)
+    def index() -> FileResponse | RedirectResponse:
+        if (web_dist / "index.html").exists():
+            return FileResponse(web_dist / "index.html")
         return RedirectResponse(url="/docs")
 
     @application.post("/api/workspaces", response_model=Workspace, status_code=201)
     def create_workspace(request: WorkspaceCreate) -> Workspace:
         return service.create_workspace(request)
 
+    @application.get("/api/workspaces", response_model=list[Workspace])
+    def list_workspaces() -> list[Workspace]:
+        return service.list_workspaces()
+
     @application.post(
         "/api/workspaces/{workspace_id}/apps", response_model=App, status_code=201
     )
     def create_chat_app(workspace_id: str, request: AppCreate) -> App:
         return service.create_app(workspace_id, request)
+
+    @application.get("/api/workspaces/{workspace_id}/apps", response_model=list[App])
+    def list_apps(workspace_id: str) -> list[App]:
+        return service.list_apps(workspace_id)
+
+    @application.get(
+        "/api/workspaces/{workspace_id}/model-provider-configs",
+        response_model=list[ModelProviderConfig],
+    )
+    def list_model_provider_configs(workspace_id: str) -> list[ModelProviderConfig]:
+        return service.list_model_provider_configs(workspace_id)
+
+    @application.post(
+        "/api/workspaces/{workspace_id}/model-provider-configs",
+        response_model=ModelProviderConfig,
+        status_code=201,
+    )
+    def create_model_provider_config(
+        workspace_id: str, request: ModelProviderConfigCreate
+    ) -> ModelProviderConfig:
+        return service.create_model_provider_config(workspace_id, request)
+
+    @application.put(
+        "/api/workspaces/{workspace_id}/model-provider-configs/{config_id}",
+        response_model=ModelProviderConfig,
+    )
+    def update_model_provider_config(
+        workspace_id: str,
+        config_id: str,
+        request: ModelProviderConfigUpdate,
+    ) -> ModelProviderConfig:
+        return service.update_model_provider_config(workspace_id, config_id, request)
 
     @application.get("/api/apps/{app_id}", response_model=App)
     def get_chat_app(app_id: str) -> App:
@@ -82,6 +134,9 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.get("/api/runs/{run_id}/events", response_model=list[RunEvent])
     def list_run_events(run_id: str) -> list[RunEvent]:
         return service.list_run_events(run_id)
+
+    if (web_dist / "assets").exists():
+        application.mount("/assets", StaticFiles(directory=web_dist / "assets"), name="web-assets")
 
     return application
 

@@ -52,7 +52,7 @@
 ## 阶段路线
 
 - [x] 阶段 0：AI 应用领域模型与最小 Chat App
-- [ ] 阶段 1：模型网关与流式运行
+- [x] 阶段 1：模型网关与流式运行
 - [ ] 阶段 2：工作流定义、校验与 DAG 调度
 - [ ] 阶段 3：变量系统、控制流与可靠执行
 - [ ] 阶段 4：知识库检索与 RAG 节点
@@ -86,12 +86,45 @@ cp .env.example .env
 uv run lob-flow create-workspace "演示空间"
 uv run lob-flow create-app <workspace_id> "客服助手"
 uv run lob-flow run <app_id> "如何申请退款？"
+cd web && npm install && npm run build && cd ..
 uv run lob-flow serve
 ```
 
-服务默认监听 <http://127.0.0.1:8000>，OpenAPI 文档位于
-<http://127.0.0.1:8000/docs>。项目直接使用 PostgreSQL，并将表放在独立的
+管理端与服务默认监听 <http://127.0.0.1:8000>，OpenAPI 文档位于
+<http://127.0.0.1:8000/docs>。前端开发可在 `web/` 执行 `npm run dev`，访问
+<http://127.0.0.1:5173>，Vite 会将 `/api` 代理到后端。项目直接使用 PostgreSQL，并将表放在独立的
 `lob_flow` Schema 中；连接参数从 `.env` 或标准 `PG*` 环境变量读取，密码不得提交。
 
-当前 Fake Model 会把渲染后的用户 Prompt 分块输出，用于在没有 API Key 的情况下验证
-Draft 快照、Run 状态和 SSE 事件。向模型输入 `__fail__` 可以固定复现失败链路。
+应用只允许运行真实的 OpenAI-compatible 模型。新建应用后必须先在「模型设置」中选择
+Workspace 级模型配置，否则运行会以 `provider_config_missing` 明确失败。
+
+### 使用真实模型
+
+Stage 1 支持 OpenAI-compatible Chat Completions SSE 协议。先在 `.env` 中配置用于加密
+数据库凭据的服务端主密钥：
+
+```dotenv
+LOB_FLOW_ENCRYPTION_KEY=使用_openssl_rand_生成的_Fernet_密钥
+```
+
+进入管理端「模型设置」，填写供应商名称、Base URL 和 API Key。后端只返回
+`has_api_key`，不会回传明文；App Draft 只保存 `provider_config_id`：
+
+```json
+{
+  "system_prompt": "你是一个有帮助的 AI 助手。",
+  "user_prompt_template": "请回答：{input}",
+  "model": {
+    "provider": "openai_compatible",
+    "model": "gpt-5.4",
+    "provider_config_id": "模型配置_ID",
+    "temperature": 0.2,
+    "max_tokens": 1024,
+    "timeout_seconds": 30
+  }
+}
+```
+
+API Key 使用 Fernet 在服务端加密后保存到 PostgreSQL，浏览器和 Draft 都不保存密钥。
+每次 Run 会保存模型供应商、模型名、Token Usage、结束原因、耗时和错误分类；真实增量
+内容继续通过 SSE 和 `message_delta` 事件输出。

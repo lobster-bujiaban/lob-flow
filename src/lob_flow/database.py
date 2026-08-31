@@ -30,6 +30,39 @@ CREATE TABLE IF NOT EXISTS apps (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS model_provider_configs (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    name TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    api_key_encrypted TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+UPDATE apps AS app
+SET draft_json = jsonb_set(
+    jsonb_set(
+        jsonb_set(app.draft_json::jsonb, '{model,provider}', '"openai_compatible"'),
+        '{model,provider_config_id}',
+        to_jsonb((
+            SELECT config.id
+            FROM model_provider_configs AS config
+            WHERE config.workspace_id = app.workspace_id
+            ORDER BY config.created_at
+            LIMIT 1
+        ))
+    ),
+    '{model,model}',
+    '"gpt-5.4"'
+)::text
+WHERE app.draft_json::jsonb #>> '{model,provider}' = 'fake'
+  AND EXISTS (
+      SELECT 1 FROM model_provider_configs AS config
+      WHERE config.workspace_id = app.workspace_id
+  );
+
 CREATE TABLE IF NOT EXISTS published_versions (
     id TEXT PRIMARY KEY,
     app_id TEXT NOT NULL REFERENCES apps(id),
@@ -46,10 +79,46 @@ CREATE TABLE IF NOT EXISTS runs (
     input TEXT NOT NULL,
     output TEXT,
     error TEXT,
+    error_code TEXT,
+    model_provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    total_tokens INTEGER,
+    finish_reason TEXT,
+    duration_ms INTEGER,
     draft_snapshot_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     finished_at TEXT
 );
+
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS error_code TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS model_provider TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS model TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS prompt_tokens INTEGER;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS completion_tokens INTEGER;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS total_tokens INTEGER;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS finish_reason TEXT;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
+
+UPDATE runs SET model_provider = 'openai_compatible' WHERE model_provider IS NULL;
+UPDATE runs SET model = 'gpt-5.4' WHERE model IS NULL;
+
+UPDATE runs AS run
+SET draft_snapshot_json = jsonb_set(
+        run.draft_snapshot_json::jsonb,
+        '{model}',
+        app.draft_json::jsonb -> 'model'
+    )::text,
+    model_provider = 'openai_compatible',
+    model = 'gpt-5.4'
+FROM apps AS app
+WHERE run.app_id = app.id
+  AND run.draft_snapshot_json::jsonb #>> '{model,provider}' = 'fake'
+  AND app.draft_json::jsonb #>> '{model,provider}' = 'openai_compatible';
+
+ALTER TABLE runs ALTER COLUMN model_provider SET NOT NULL;
+ALTER TABLE runs ALTER COLUMN model SET NOT NULL;
 
 CREATE TABLE IF NOT EXISTS run_events (
     run_id TEXT NOT NULL REFERENCES runs(id),

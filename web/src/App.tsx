@@ -1,0 +1,214 @@
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { api } from "./api";
+import type { App as FlowApp, DraftDefinition, ProviderConfig, Workspace } from "./types";
+
+type Tab = "chat" | "settings";
+
+export function App() {
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [workspaceId, setWorkspaceId] = useState("");
+  const [apps, setApps] = useState<FlowApp[]>([]);
+  const [appId, setAppId] = useState("");
+  const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  const [tab, setTab] = useState<Tab>("chat");
+  const [error, setError] = useState("");
+
+  const activeApp = useMemo(() => apps.find((item) => item.id === appId), [apps, appId]);
+
+  useEffect(() => {
+    api.listWorkspaces().then((items) => {
+      setWorkspaces(items);
+      if (items[0]) setWorkspaceId(items[0].id);
+    }).catch(showError);
+  }, []);
+
+  useEffect(() => {
+    if (!workspaceId) return;
+    Promise.all([api.listApps(workspaceId), api.listProviders(workspaceId)])
+      .then(([appItems, providerItems]) => {
+        setApps(appItems);
+        setProviders(providerItems);
+        setAppId((current) => appItems.some((item) => item.id === current) ? current : appItems[0]?.id ?? "");
+      })
+      .catch(showError);
+  }, [workspaceId]);
+
+  function showError(reason: unknown) {
+    setError(reason instanceof Error ? reason.message : String(reason));
+  }
+
+  async function createWorkspace() {
+    const name = window.prompt("空间名称");
+    if (!name?.trim()) return;
+    try {
+      const created = await api.createWorkspace(name.trim());
+      setWorkspaces((items) => [...items, created]);
+      setWorkspaceId(created.id);
+      setError("");
+    } catch (reason) { showError(reason); }
+  }
+
+  async function createApp() {
+    if (!workspaceId) return;
+    const name = window.prompt("应用名称");
+    if (!name?.trim()) return;
+    try {
+      const created = await api.createApp(workspaceId, name.trim());
+      setApps((items) => [...items, created]);
+      setAppId(created.id);
+      setTab("chat");
+      setError("");
+    } catch (reason) { showError(reason); }
+  }
+
+  function replaceApp(updated: FlowApp) {
+    setApps((items) => items.map((item) => item.id === updated.id ? updated : item));
+  }
+
+  return (
+    <div className="shell">
+      <aside className="sidebar">
+        <div className="brand"><span className="brand-mark">L</span><span>LOB Flow</span></div>
+        <div className="section-label">工作空间</div>
+        <div className="select-row">
+          <select value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
+            <option value="">选择空间</option>
+            {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+          </select>
+          <button className="icon-button" onClick={createWorkspace} title="新建空间">＋</button>
+        </div>
+        <div className="section-title"><span>应用</span><button className="text-button" onClick={createApp}>新建</button></div>
+        <nav className="app-list">
+          {apps.map((item) => (
+            <button key={item.id} className={item.id === appId ? "app-item active" : "app-item"} onClick={() => setAppId(item.id)}>
+              <span className="app-icon">✦</span><span>{item.name}</span>
+            </button>
+          ))}
+          {!apps.length && <div className="empty-small">还没有应用</div>}
+        </nav>
+        <div className="sidebar-foot"><span className="status-dot" />PostgreSQL 已连接</div>
+      </aside>
+
+      <main className="main">
+        <header className="topbar">
+          <div><div className="eyebrow">AI APPLICATION</div><h1>{activeApp?.name ?? "选择或创建应用"}</h1></div>
+          {activeApp && <div className="tabs">
+            <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button>
+            <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button>
+          </div>}
+        </header>
+        {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
+        {!activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
+          <ChatPanel app={activeApp} onError={showError} />
+        ) : (
+          <SettingsPanel
+            app={activeApp}
+            workspaceId={workspaceId}
+            providers={providers}
+            setProviders={setProviders}
+            onSaved={replaceApp}
+            onError={showError}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+function Welcome({ onCreate, disabled }: { onCreate: () => void; disabled: boolean }) {
+  return <div className="welcome"><div className="welcome-icon">⌁</div><h2>构建第一个 AI 应用</h2><p>先配置模型，再从一条真实对话开始理解应用运行链路。</p><button className="primary" onClick={onCreate} disabled={disabled}>创建应用</button></div>;
+}
+
+function ChatPanel({ app, onError }: { app: FlowApp; onError: (reason: unknown) => void }) {
+  const [input, setInput] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [running, setRunning] = useState(false);
+  const [meta, setMeta] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!input.trim() || running) return;
+    setAnswer(""); setMeta(""); setRunning(true);
+    try {
+      await api.streamRun(app.id, input.trim(), (item) => {
+        if (item.type === "message_delta") setAnswer((value) => value + String(item.data.delta ?? ""));
+        if (item.type === "model_completed") {
+          const usage = item.data.usage as Record<string, number | null>;
+          setMeta(`${item.data.duration_ms} ms · ${usage.total_tokens ?? "--"} tokens · ${item.data.finish_reason ?? "完成"}`);
+        }
+        if (item.type === "run_failed") onError(`${item.data.error_code}: ${item.data.error}`);
+      });
+    } catch (reason) { onError(reason); } finally { setRunning(false); }
+  }
+
+  return <section className="chat-layout">
+    <div className="chat-stage">
+      <div className="chat-heading"><div><h2>对话调试</h2><p>{app.draft.model.model}</p></div><span className="draft-badge">DRAFT</span></div>
+      <div className="conversation">
+        {!answer && !running && <div className="conversation-empty"><span>✦</span><h3>测试你的应用</h3><p>输入一条消息，观察模型输出和运行指标。</p></div>}
+        {(answer || running) && <div className="message"><div className="avatar">AI</div><div><div className="bubble">{answer || <span className="typing">正在思考</span>}</div>{meta && <div className="message-meta">{meta}</div>}</div></div>}
+      </div>
+      <form className="composer" onSubmit={submit}>
+        <textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="输入消息，按发送开始调试…" rows={3} />
+        <button className="send" disabled={running || !input.trim()}>{running ? "运行中" : "发送"}</button>
+      </form>
+    </div>
+  </section>;
+}
+
+function SettingsPanel(props: {
+  app: FlowApp; workspaceId: string; providers: ProviderConfig[];
+  setProviders: (value: ProviderConfig[]) => void;
+  onSaved: (app: FlowApp) => void; onError: (reason: unknown) => void;
+}) {
+  const { app, workspaceId, providers, setProviders, onSaved, onError } = props;
+  const [draft, setDraft] = useState<DraftDefinition>(app.draft);
+  const [showCredential, setShowCredential] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => setDraft(app.draft), [app]);
+
+  async function save() {
+    setSaving(true);
+    try { onSaved(await api.updateDraft(app.id, draft)); }
+    catch (reason) { onError(reason); }
+    finally { setSaving(false); }
+  }
+
+  async function createCredential(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    try {
+      const created = await api.createProvider(workspaceId, {
+        name: String(data.get("name")), base_url: String(data.get("base_url")), api_key: String(data.get("api_key"))
+      });
+      const model = String(data.get("model"));
+      setProviders([...providers, created]);
+      setDraft((value) => ({ ...value, model: { ...value.model, provider: "openai_compatible", provider_config_id: created.id, model } }));
+      setShowCredential(false);
+    } catch (reason) { onError(reason); }
+  }
+
+  return <section className="settings-wrap">
+    <div className="settings-main">
+      <div className="panel-title"><div><h2>模型与 Prompt</h2><p>配置只影响当前草稿，凭据由工作空间统一管理。</p></div><button className="primary" onClick={save} disabled={saving}>{saving ? "保存中" : "保存草稿"}</button></div>
+      <div className="card">
+        <div className="form-grid two">
+          <div><label>模型供应商</label><select value={draft.model.provider_config_id ?? ""} onChange={(e) => setDraft({ ...draft, model: { ...draft.model, provider_config_id: e.target.value || null } })}><option value="">请选择真实模型配置</option>{providers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
+          <div><label>模型名称</label><input value={draft.model.model} onChange={(e) => setDraft({ ...draft, model: { ...draft.model, model: e.target.value } })} /></div>
+        </div>
+        {!providers.length && <button className="text-button provider-add" onClick={() => setShowCredential(true)}>＋ 添加真实模型配置</button>}
+      </div>
+      <div className="card form-grid">
+        <div><label>System Prompt</label><textarea rows={5} value={draft.system_prompt} onChange={(e) => setDraft({ ...draft, system_prompt: e.target.value })} /></div>
+        <div><label>用户 Prompt 模板</label><textarea rows={4} value={draft.user_prompt_template} onChange={(e) => setDraft({ ...draft, user_prompt_template: e.target.value })} /><span className="hint">使用 <code>{"{input}"}</code> 引用用户输入</span></div>
+      </div>
+    </div>
+    <aside className="provider-panel">
+      <div className="panel-title compact"><div><h3>模型供应商</h3><p>API Key 加密保存</p></div><button className="icon-button" onClick={() => setShowCredential(true)}>＋</button></div>
+      {providers.map((item) => <div className="provider-item" key={item.id}><div className="provider-logo">AI</div><div><strong>{item.name}</strong><span>{item.base_url}</span></div><span className="secure">已加密</span></div>)}
+      {!providers.length && <div className="empty-provider">尚未配置真实模型</div>}
+    </aside>
+    {showCredential && <div className="modal-backdrop"><form className="modal" onSubmit={createCredential}><div className="modal-head"><div><h3>添加 OpenAI 配置</h3><p>OpenAI Chat Completions API</p></div><button type="button" onClick={() => setShowCredential(false)}>×</button></div><label>配置名称</label><input name="name" placeholder="例如：OpenAI" required /><label>Base URL</label><input name="base_url" defaultValue="https://api.openai.com/v1" required /><label>模型名称</label><input name="model" defaultValue="gpt-5.4" required /><label>API Key</label><input name="api_key" type="password" autoComplete="new-password" placeholder="仅在提交时传给后端" required /><div className="security-note">🔒 密钥由服务端加密，保存后不会再次返回明文。</div><button className="primary wide">保存配置</button></form></div>}
+  </section>;
+}

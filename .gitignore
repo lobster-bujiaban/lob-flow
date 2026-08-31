@@ -4,4 +4,7 @@ __pycache__/
 .lob-flow/
 *.db
 .env
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
 .idea/

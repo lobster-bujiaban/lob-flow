@@ -75,7 +75,7 @@ Workspace
 任务：
 
 1. 定义 `ModelProvider`、`ModelConfig`、`CredentialRef` 和统一请求响应协议。
-2. 接入一个 OpenAI-compatible 供应商，并保留可重复的 Fake Provider。
+2. 接入 OpenAI-compatible 真实供应商，应用不提供 Fake Model 运行路径。
 3. 统一处理流式文本、结束原因、Token Usage、超时和供应商错误。
 4. 支持模型参数校验、默认值和供应商能力声明。
 5. 凭据加密或引用保存，接口与日志只返回脱敏状态。
