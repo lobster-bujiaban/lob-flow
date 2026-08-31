@@ -65,6 +65,9 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
   const [plugins, setPlugins] = useState<PluginCatalogItem[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [panelMode, setPanelMode] = useState<"node" | "run" | null>(null);
+  const [lastSaved, setLastSaved] = useState("");
 
   useEffect(() => {
     api.getWorkflow(app.id).then((draft) => loadDefinition(draft.definition)).catch(onError);
@@ -89,6 +92,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
       animated: false
     })));
     setSelectedId(null);
+    setPanelMode(null);
   }
 
   const selected = useMemo(() => nodes.find((node) => node.id === selectedId) ?? null, [nodes, selectedId]);
@@ -123,6 +127,8 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
     };
     setNodes((current) => [...current, node]);
     setSelectedId(id);
+    setPanelMode("node");
+    setPaletteOpen(false);
     setToolMenuOpen(false);
   }
 
@@ -148,11 +154,12 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
     } : node));
   }
 
-  async function save(showSuccess = true): Promise<boolean> {
+  async function save(): Promise<boolean> {
     setSaving(true);
     try {
-      const saved = await api.updateWorkflow(app.id, definition());
-      if (showSuccess) loadDefinition(saved.definition);
+      await api.updateWorkflow(app.id, definition());
+      setLastSaved(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+      setEdges((current) => current.map((edge) => ({ ...edge, animated: false })));
       return true;
     } catch (reason) {
       onError(reason);
@@ -161,7 +168,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
   }
 
   async function run() {
-    if (!input.trim() || running || !(await save(false))) return;
+    if (!input.trim() || running || !(await save())) return;
     setRunning(true); setAnswer("");
     setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, status: undefined, output: undefined } })));
     try {
@@ -183,12 +190,10 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
 
   return <section className="flow-canvas-shell">
     <div className="flow-toolbar">
-      <div><strong>工作流画布</strong><span>拖拽节点 · 端口连线 · Delete 删除</span></div>
-      <button className="flow-knowledge-add" onClick={() => addNode("knowledge")}>＋ Knowledge</button>
-      <div className="flow-add-buttons"><button onClick={() => addNode("template")}>＋ Template</button><button onClick={() => addNode("llm")}>＋ LLM</button><div className="tool-node-picker"><button className={toolMenuOpen ? "active" : ""} onClick={() => setToolMenuOpen((open) => !open)}>＋ 已安装工具 <span>⌄</span></button>{toolMenuOpen && <div className="tool-node-menu">{plugins.filter((item) => item.installed && item.enabled).map((plugin) => <div className="tool-node-group" key={plugin.manifest.plugin_id}><strong><span>{plugin.manifest.icon}</span>{plugin.manifest.name}</strong>{plugin.manifest.tools.map((tool) => <button key={tool.name} onClick={() => addNode("tool", plugin, tool.name)}><span>{tool.label}</span><small>{tool.description}</small></button>)}</div>)}{!plugins.some((item) => item.installed && item.enabled) && <div className="tool-menu-empty">还没有启用的插件，请先到插件市场安装。</div>}</div>}</div><button onClick={() => addNode("answer")}>＋ Answer</button></div>
-      <button className="primary" onClick={() => save()} disabled={saving}>{saving ? "保存中" : "保存工作流"}</button>
+      <div><strong>{app.name}</strong><span>{saving ? "正在保存…" : lastSaved ? `已保存 ${lastSaved}` : "未保存的草稿"}</span></div>
+      <div className="flow-toolbar-actions"><button onClick={() => { setSelectedId(null); setPanelMode("run"); }}>▷ 测试运行</button><button onClick={() => save()} disabled={saving}>{saving ? "保存中" : "保存草稿"}</button><button className="primary" onClick={() => save()} disabled={saving}>发布</button></div>
     </div>
-    <div className="flow-canvas-main">
+    <div className={`flow-canvas-main ${panelMode ? "panel-open" : ""}`}>
       <div className="flow-board">
         <ReactFlow
           nodes={nodes}
@@ -197,8 +202,8 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={connect}
-          onNodeClick={(_, node) => setSelectedId(node.id)}
-          onPaneClick={() => setSelectedId(null)}
+          onNodeClick={(_, node) => { setSelectedId(node.id); setPanelMode("node"); }}
+          onPaneClick={() => { setSelectedId(null); setPanelMode(null); setPaletteOpen(false); }}
           deleteKeyCode={["Backspace", "Delete"]}
           proOptions={{ hideAttribution: true }}
           fitView
@@ -209,10 +214,9 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
           <MiniMap nodeColor={(node) => (node.data as CanvasData).workflow.type === "llm" ? "#ed5a2a" : (node.data as CanvasData).workflow.type === "answer" ? "#24855b" : "#17335e"} />
           <Controls />
         </ReactFlow>
+        <div className="flow-palette"><button className={paletteOpen ? "active" : ""} onClick={() => setPaletteOpen((open) => !open)} title="添加节点">＋</button><button onClick={() => setPanelMode("run")} title="测试运行">▷</button>{paletteOpen && <div className="flow-node-library"><header><strong>添加节点</strong><button onClick={() => setPaletteOpen(false)}>×</button></header><button onClick={() => addNode("template")}><i>T</i><span><strong>Prompt 模板</strong><small>组合和转换上游变量</small></span></button><button onClick={() => addNode("llm")}><i>AI</i><span><strong>LLM</strong><small>调用已配置的大语言模型</small></span></button><button onClick={() => addNode("knowledge")}><i>⌕</i><span><strong>知识检索</strong><small>从知识库召回相关片段</small></span></button><div className="tool-node-picker"><button className={toolMenuOpen ? "active" : ""} onClick={() => setToolMenuOpen((open) => !open)}><i>⌘</i><span><strong>工具</strong><small>调用已安装的工具能力</small></span></button>{toolMenuOpen && <div className="tool-node-menu">{plugins.filter((item) => item.installed && item.enabled).map((plugin) => <div className="tool-node-group" key={plugin.manifest.plugin_id}><strong><span>{plugin.manifest.icon}</span>{plugin.manifest.name}</strong>{plugin.manifest.tools.map((tool) => <button key={tool.name} onClick={() => addNode("tool", plugin, tool.name)}><span>{tool.label}</span><small>{tool.description}</small></button>)}</div>)}{!plugins.some((item) => item.installed && item.enabled) && <div className="tool-menu-empty">还没有启用的工具，请先到工具页安装。</div>}</div>}</div><button onClick={() => addNode("answer")}><i>✓</i><span><strong>回答</strong><small>输出工作流最终结果</small></span></button></div>}</div>
       </div>
-      <aside className="flow-inspector">
-        {selected ? <NodeInspector node={selected.data.workflow} providers={providers} plugins={plugins} datasets={datasets} update={updateSelected} remove={deleteSelected} /> : <RunInspector input={input} setInput={setInput} run={run} running={running} answer={answer} />}
-      </aside>
+      {panelMode && <aside className="flow-inspector"><button className="inspector-close" onClick={() => { setPanelMode(null); setSelectedId(null); }}>×</button>{panelMode === "node" && selected ? <NodeInspector node={selected.data.workflow} providers={providers} plugins={plugins} datasets={datasets} update={updateSelected} remove={deleteSelected} /> : <RunInspector input={input} setInput={setInput} run={run} running={running} answer={answer} />}</aside>}
     </div>
   </section>;
 }
