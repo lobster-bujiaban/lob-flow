@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -41,14 +42,29 @@ class Database:
 
     @contextmanager
     def connect(self) -> Iterator[psycopg.Connection]:
-        connection = psycopg.connect(self.conninfo, row_factory=dict_row)
+        last_error: psycopg.OperationalError | None = None
+        connection = None
+        for attempt in range(3):
+            try:
+                connection = psycopg.connect(
+                    self.conninfo, row_factory=dict_row, connect_timeout=10
+                )
+                break
+            except psycopg.OperationalError as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))
+        if connection is None:
+            assert last_error is not None
+            raise last_error
         try:
             connection.execute("CREATE SCHEMA IF NOT EXISTS lob_flow")
             connection.execute("SET search_path TO lob_flow")
             yield connection
             connection.commit()
         except Exception:
-            connection.rollback()
+            if not connection.closed:
+                connection.rollback()
             raise
         finally:
             connection.close()

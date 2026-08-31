@@ -48,6 +48,23 @@ export const api = {
     }),
   listPlugins: (workspaceId: string) =>
     request<PluginCatalogItem[]>(`/api/workspaces/${workspaceId}/plugins`),
+  daemonStatus: () => request<{ available: boolean }>("/api/dify-plugin-daemon/status"),
+  exploreMarketplace: (query = "") =>
+    request<Array<{ org: string; name: string; label: string; description: string; category: string; icon_url: string; install_count: number; verified: boolean; version: string; identifier: string; updated_at: string }>>(`/api/dify-marketplace/plugins?q=${encodeURIComponent(query)}&limit=36`),
+  installMarketplacePlugin: (workspaceId: string, identifier: string) =>
+    request<{ identifier: string; installation: unknown }>(`/api/workspaces/${workspaceId}/dify-marketplace/install`, {
+      method: "POST", body: JSON.stringify({ identifier })
+    }),
+  uploadDifyPlugin: async (workspaceId: string, file: File) => {
+    const response = await fetch(`/api/workspaces/${workspaceId}/dify-plugins/upload`, {
+      method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.detail ?? `插件安装失败：${response.status}`);
+    }
+    return response.json();
+  },
   installPlugin: (workspaceId: string, pluginId: string, credentials: Record<string, string> = {}) =>
     request(`/api/workspaces/${workspaceId}/plugins/${pluginId}/install`, {
       method: "POST", body: JSON.stringify({ credentials })

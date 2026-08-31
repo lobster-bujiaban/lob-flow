@@ -1,0 +1,53 @@
+services:
+  plugin-daemon-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${DIFY_PLUGIN_REDIS_PASSWORD:-dify_plugin_dev}"]
+    volumes:
+      - plugin-daemon-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${DIFY_PLUGIN_REDIS_PASSWORD:-dify_plugin_dev}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  plugin-daemon:
+    image: langgenius/dify-plugin-daemon:0.6.6-local
+    env_file: .env.dify
+    ports:
+      - "127.0.0.1:5002:5002"
+      - "127.0.0.1:5003:5003"
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 5002
+      PLATFORM: local
+      GIN_MODE: release
+      REDIS_HOST: plugin-daemon-redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${DIFY_PLUGIN_REDIS_PASSWORD:-dify_plugin_dev}
+      REDIS_DB: 0
+      PLUGIN_STORAGE_TYPE: local
+      PLUGIN_STORAGE_LOCAL_ROOT: /app/storage
+      PLUGIN_INSTALLED_PATH: plugin
+      PLUGIN_WORKING_PATH: cwd
+      PERSISTENCE_STORAGE_PATH: persistence
+      FORCE_VERIFYING_SIGNATURE: "true"
+      ENFORCE_LANGGENIUS_PLUGIN_SIGNATURES: "true"
+      PLUGIN_REMOTE_INSTALLING_ENABLED: "true"
+      PLUGIN_REMOTE_INSTALLING_HOST: 0.0.0.0
+      PLUGIN_REMOTE_INSTALLING_PORT: 5003
+      DIFY_INNER_API_URL: http://host.docker.internal:8000/api/dify-inner
+      PYTHON_ENV_INIT_TIMEOUT: 300
+      PLUGIN_INSTALL_TIMEOUT: 15
+      PIP_MIRROR_AUTO_DETECT: "true"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - plugin-daemon-storage:/app/storage
+    depends_on:
+      plugin-daemon-redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  plugin-daemon-redis:
+  plugin-daemon-storage:

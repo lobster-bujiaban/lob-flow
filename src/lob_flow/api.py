@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import psycopg
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from lob_flow.database import Database
+from lob_flow.dify_daemon import DifyDaemonClient, DifyDaemonError
+from lob_flow.dify_marketplace import DifyMarketplaceClient
 from lob_flow.models import (
     App,
     AppCreate,
@@ -44,6 +47,8 @@ def create_app(database: Database | None = None) -> FastAPI:
     service = FlowService(database)
     workflow_service = WorkflowService(database, service.model_gateway)
     plugin_service = PluginService(database, service.cipher)
+    dify_daemon = DifyDaemonClient.from_env()
+    dify_marketplace = DifyMarketplaceClient(dify_daemon)
     workflow_service.plugin_service = plugin_service
     web_dist = Path(__file__).resolve().parents[2] / "web" / "dist"
 
@@ -70,6 +75,14 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.exception_handler(WorkflowValidationError)
     async def workflow_validation_handler(_, exc: WorkflowValidationError):
         return JSONResponse(status_code=422, content={"detail": exc.errors})
+
+    @application.exception_handler(DifyDaemonError)
+    async def dify_daemon_handler(_, exc: DifyDaemonError):
+        return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+    @application.exception_handler(psycopg.OperationalError)
+    async def database_connection_handler(_, exc: psycopg.OperationalError):
+        return JSONResponse(status_code=503, content={"detail": f"PostgreSQL 连接失败：{exc}"})
 
     @application.get("/health")
     def health() -> dict[str, str]:
@@ -138,6 +151,36 @@ def create_app(database: Database | None = None) -> FastAPI:
     def plugin_marketplace(workspace_id: str) -> list[PluginCatalogItem]:
         service.get_workspace(workspace_id)
         return plugin_service.marketplace(workspace_id)
+
+    @application.get("/api/dify-plugin-daemon/status")
+    def dify_plugin_daemon_status() -> dict[str, bool]:
+        return {"available": dify_daemon.available()}
+
+    @application.get("/api/dify-marketplace/plugins")
+    def explore_dify_marketplace(q: str = "", limit: int = 60) -> list[dict]:
+        return dify_marketplace.explore(q, limit)
+
+    @application.post("/api/workspaces/{workspace_id}/dify-marketplace/install")
+    def install_dify_marketplace_plugin(workspace_id: str, request: dict) -> dict:
+        service.get_workspace(workspace_id)
+        identifier = str(request.get("identifier", ""))
+        if not identifier:
+            return JSONResponse(status_code=422, content={"detail": "缺少插件 identifier"})
+        return dify_marketplace.install(workspace_id, identifier)
+
+    @application.post("/api/workspaces/{workspace_id}/dify-plugins/upload")
+    async def upload_dify_plugin(workspace_id: str, request: Request) -> dict:
+        service.get_workspace(workspace_id)
+        package = await request.body()
+        if not package or len(package) > 52_428_800:
+            return JSONResponse(status_code=422, content={"detail": "difypkg 大小必须在 1B 到 50MB 之间"})
+        decoded = dify_daemon.upload_package(workspace_id, package)
+        data = decoded.get("data", decoded)
+        identifier = data.get("unique_identifier") if isinstance(data, dict) else None
+        if not identifier:
+            raise DifyDaemonError("Daemon 未返回 plugin unique identifier")
+        installation = dify_daemon.install_identifier(workspace_id, str(identifier))
+        return {"identifier": identifier, "decode": data, "installation": installation.get("data", installation)}
 
     @application.post(
         "/api/workspaces/{workspace_id}/plugins/{plugin_id:path}/install",

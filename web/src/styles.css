@@ -146,6 +146,16 @@ select:focus, input:focus, textarea:focus { border-color: var(--orange); box-sha
 .marketplace-head h2 { margin: 5px 0 6px; color: var(--navy); font-size: 27px; }
 .marketplace-head p { color: var(--muted); }
 .marketplace-head input { width: min(320px, 38vw); background: rgba(255,255,255,.74); }
+.marketplace-controls { display: flex; align-items: center; gap: 8px; }
+.marketplace-controls button { height: 40px; white-space: nowrap; border: 1px solid #efb99f; border-radius: 9px; background: var(--orange-soft); color: var(--orange-dark); font-size: 11px; font-weight: 650; }
+.marketplace-controls button:disabled { cursor: default; opacity: .45; }
+.file-input { display: none; }
+.daemon-dot { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: #b9bec7; }.daemon-dot.online { background: #2ca36b; box-shadow: 0 0 0 3px #2ca36b1c; }
+.marketplace-notice { margin: -8px 0 18px; padding: 10px 13px; border: 1px solid #bee4ce; border-radius: 9px; background: #f0fbf5; color: #287050; font-size: 11px; }
+.marketplace-section-title { display: flex; align-items: center; justify-content: space-between; margin: 22px 0 12px; color: var(--navy); font-size: 12px; }.marketplace-section-title span { color: var(--muted); font-size: 10px; }
+.market-card { min-height: 205px; }
+.marketplace-categories { display: flex; flex-wrap: wrap; gap: 7px; margin: 18px 0 4px; }.marketplace-categories button { padding: 7px 12px; border: 1px solid transparent; border-radius: 9px; background: transparent; color: var(--muted); font-size: 11px; }.marketplace-categories button.active { border-color: #efb99f; background: var(--orange-soft); color: var(--orange-dark); font-weight: 650; }
+.market-card { position: relative; }.plugin-category { position: absolute; top: 10px; right: 12px; color: var(--muted); font-size: 9px; }.plugin-icon img { width: 28px; height: 28px; object-fit: contain; }.plugin-install-count { margin-top: auto; padding-top: 8px; color: var(--muted); font-size: 10px; }
 .marketplace-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(290px,1fr)); gap: 16px; }
 .plugin-card { display: flex; flex-direction: column; min-height: 245px; padding: 20px; border: 1px solid var(--line); border-radius: 17px; background: rgba(255,255,255,.78); box-shadow: 0 9px 28px rgba(23,45,79,.06); }
 .plugin-card-head { display: flex; align-items: center; gap: 13px; }
