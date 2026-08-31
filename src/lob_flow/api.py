@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from lob_flow.database import Database
@@ -213,6 +213,15 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.get("/api/dify-marketplace/plugins")
     def explore_dify_marketplace(q: str = "", limit: int = 60) -> list[dict]:
         return dify_marketplace.explore(q, limit)
+
+    @application.get("/api/dify-marketplace/icons/{icon_path:path}", response_model=None)
+    def dify_marketplace_icon(icon_path: str) -> Response:
+        content, media_type = dify_marketplace.load_icon(icon_path)
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=14400"},
+        )
 
     @application.post("/api/workspaces/{workspace_id}/dify-marketplace/install")
     def install_dify_marketplace_plugin(workspace_id: str, request: dict) -> dict:

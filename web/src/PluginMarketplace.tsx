@@ -1,6 +1,11 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 
+function MarketplaceIcon({ src, name }: { src: string; name: string }) {
+  const [failed, setFailed] = useState(false);
+  return <div className="plugin-icon">{src && !failed ? <img src={src} alt={`${name} 图标`} onError={() => setFailed(true)} /> : <span>{name.slice(0, 2).toUpperCase()}</span>}</div>;
+}
+
 export function PluginMarketplace({ workspaceId, onError }: { workspaceId: string; onError: (reason: unknown) => void }) {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState("");
@@ -45,7 +50,7 @@ export function PluginMarketplace({ workspaceId, onError }: { workspaceId: strin
     <div className="marketplace-section-title"><strong>探索 Marketplace</strong><span>{visibleMarketPlugins.length} 个结果</span></div>
     <div className="marketplace-grid">{visibleMarketPlugins.map((item) => <article className="plugin-card market-card" key={item.identifier}>
       <span className="plugin-category">{categories.find((entry) => entry.id === item.category)?.label ?? item.category}</span>
-      <div className="plugin-card-head"><div className="plugin-icon">{item.icon_url ? <img src={item.icon_url} alt="" /> : item.name.slice(0, 2).toUpperCase()}</div><div><h3>{item.label} {item.verified && <span className="verified">✓</span>}</h3><p>{item.org}/{item.name} · v{item.version}</p></div></div>
+      <div className="plugin-card-head"><MarketplaceIcon src={item.icon_url} name={item.name} /><div><h3>{item.label} {item.verified && <span className="verified">✓</span>}</h3><p>{item.org}/{item.name} · v{item.version}</p></div></div>
       <p className="plugin-description">{item.description || "来自 Dify Marketplace"}</p>
       <div className="plugin-install-count">⇩ {item.install_count.toLocaleString()}</div>
       <div className="plugin-actions"><button className="primary" onClick={() => installFromMarketplace(item.identifier)} disabled={!daemonAvailable || busy === item.identifier}>{busy === item.identifier ? "安装中…" : "安装"}</button></div>

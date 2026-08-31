@@ -7,7 +7,7 @@ import { PluginMarketplace } from "./PluginMarketplace";
 import { KnowledgeBase } from "./KnowledgeBase";
 import { ToolsLibrary } from "./ToolsLibrary";
 
-type Tab = "chat" | "workflow" | "knowledge" | "tools" | "plugins" | "settings";
+type Tab = "studio" | "chat" | "workflow" | "knowledge" | "tools" | "plugins" | "settings";
 type AppFilter = "all" | AppType;
 
 const appTypes: Array<{ id: AppType; label: string; icon: string; description: string }> = [
@@ -24,7 +24,7 @@ export function App() {
   const [apps, setApps] = useState<FlowApp[]>([]);
   const [appId, setAppId] = useState("");
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
-  const [tab, setTab] = useState<Tab>("chat");
+  const [tab, setTab] = useState<Tab>("studio");
   const [error, setError] = useState("");
   const [appFilter, setAppFilter] = useState<AppFilter>("all");
   const [showCreateApp, setShowCreateApp] = useState(false);
@@ -113,50 +113,25 @@ export function App() {
     setApps((items) => items.map((item) => item.id === updated.id ? updated : item));
   }
 
-  return (
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand"><img className="brand-logo" src={lobsterLogo} alt="LOB" /><span className="brand-copy"><strong>LOB Flow</strong><small>AI 应用编排</small></span></div>
-        <div className="section-label">工作空间</div>
-        <div className="select-row">
-          <select value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
-            <option value="">选择空间</option>
-            {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-          </select>
-          <button className="icon-button" onClick={createWorkspace} title="新建空间">＋</button>
-          <button className="icon-button danger-icon" onClick={deleteWorkspace} disabled={!workspaceId} title="删除当前空间">×</button>
-        </div>
-        <div className="section-title"><span>应用</span><button className="text-button" onClick={createApp}>新建</button></div>
-        <div className="app-type-filter"><button className={appFilter === "all" ? "active" : ""} onClick={() => setAppFilter("all")}>全部</button>{appTypes.map((type) => <button key={type.id} title={type.label} className={appFilter === type.id ? "active" : ""} onClick={() => setAppFilter(type.id)}>{type.icon}</button>)}</div>
-        <nav className="app-list">
-          {visibleApps.map((item) => <div key={item.id} className={item.id === appId ? "app-row active" : "app-row"}>
-            <button className="app-item" onClick={() => setAppId(item.id)}><span className="app-icon">{appTypes.find((type) => type.id === item.app_type)?.icon ?? "✦"}</span><span><strong>{item.name}</strong><small>{appTypes.find((type) => type.id === item.app_type)?.label}</small></span></button>
-            <button className="app-delete" onClick={() => deleteApp(item)} title={`删除 ${item.name}`}>×</button>
-          </div>)}
-          {!visibleApps.length && <div className="empty-small">{apps.length ? "此分类暂无应用" : "还没有应用"}</div>}
-        </nav>
-        <div className="sidebar-foot"><span className="status-dot" />PostgreSQL 已连接</div>
-      </aside>
+  function openApp(item: FlowApp) {
+    setAppId(item.id);
+    setTab(item.app_type === "workflow" ? "workflow" : "chat");
+  }
 
+  return (
+    <div className="dify-shell">
+      <header className="global-header">
+        <div className="global-brand"><img src={lobsterLogo} alt="LOB" /><strong>LOB Flow</strong><span>/</span><select value={workspaceId} onChange={(event) => { setWorkspaceId(event.target.value); setTab("studio"); }}><option value="">选择空间</option>{workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select><button onClick={createWorkspace} title="新建空间">＋</button></div>
+        <nav className="global-nav"><button className={tab === "studio" ? "active" : ""} onClick={() => setTab("studio")}>▦ 工作室</button><button className={tab === "knowledge" ? "active" : ""} onClick={() => setTab("knowledge")}>▤ 知识库</button><button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>T 工具</button></nav>
+        <div className="global-actions"><button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>◈ 插件</button><button className="user-avatar-top">LOB</button></div>
+      </header>
       <main className="main">
-        <header className="topbar">
-          <div><div className="eyebrow">AI APPLICATION</div><h1>{tab === "knowledge" ? "知识库" : tab === "tools" ? "工具" : activeApp?.name ?? "选择或创建应用"}</h1></div>
-          {workspaceId && <div className="tabs">
-            <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button>
-            <button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button>
-            <button className={tab === "knowledge" ? "active" : ""} onClick={() => setTab("knowledge")}>知识库</button>
-            <button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>工具</button>
-            <button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>插件市场</button>
-            <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button>
-          </div>}
-        </header>
+        {activeApp && ["chat", "workflow", "settings"].includes(tab) && <header className="app-header"><button className="app-back" onClick={() => setTab("studio")}>←</button><div className="app-header-title"><span>{appTypes.find((type) => type.id === activeApp.app_type)?.icon}</span><div><strong>{activeApp.name}</strong><small>{appTypes.find((type) => type.id === activeApp.app_type)?.label}</small></div></div><nav><button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button><button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button><button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button></nav></header>}
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
-        {tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : tab === "tools" ? <ToolsLibrary workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
+        {tab === "studio" ? <Studio apps={visibleApps} allApps={apps} filter={appFilter} setFilter={setAppFilter} onCreate={createApp} onOpen={openApp} onDelete={deleteApp} onDeleteWorkspace={deleteWorkspace} disabled={!workspaceId} /> : tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : tab === "tools" ? <ToolsLibrary workspaceId={workspaceId} onError={showError} /> : tab === "plugins" ? <PluginMarketplace workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
           <ChatPanel app={activeApp} onError={showError} />
         ) : tab === "workflow" ? (
           <WorkflowCanvas app={activeApp} workspaceId={workspaceId} providers={providers} onError={showError} />
-        ) : tab === "plugins" ? (
-          <PluginMarketplace workspaceId={workspaceId} onError={showError} />
         ) : (
           <SettingsPanel
             app={activeApp}
@@ -171,6 +146,13 @@ export function App() {
       {showCreateApp && <div className="modal-backdrop"><form className="modal app-create-modal" onSubmit={submitCreateApp}><div className="modal-head"><div><h3>创建应用</h3><p>应用类型决定默认运行方式，创建后仍可使用工作流编排。</p></div><button type="button" onClick={() => setShowCreateApp(false)}>×</button></div><label>应用名称</label><input name="name" required autoFocus placeholder="例如：客户支持 Agent" /><label>应用类型</label><div className="app-type-options">{appTypes.map((type, index) => <label key={type.id}><input type="radio" name="app_type" value={type.id} defaultChecked={index === 1} /><span><i>{type.icon}</i><strong>{type.label}</strong><small>{type.description}</small></span></label>)}</div><button className="primary wide">创建应用</button></form></div>}
     </div>
   );
+}
+
+function Studio({ apps, allApps, filter, setFilter, onCreate, onOpen, onDelete, onDeleteWorkspace, disabled }: { apps: FlowApp[]; allApps: FlowApp[]; filter: AppFilter; setFilter: (value: AppFilter) => void; onCreate: () => void; onOpen: (app: FlowApp) => void; onDelete: (app: FlowApp) => void; onDeleteWorkspace: () => void; disabled: boolean }) {
+  const [search, setSearch] = useState("");
+  const [mineOnly, setMineOnly] = useState(false);
+  const visible = apps.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()));
+  return <section className="studio-wrap"><div className="studio-controls"><nav><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>▦ 全部</button>{appTypes.map((type) => <button key={type.id} className={filter === type.id ? "active" : ""} onClick={() => setFilter(type.id)}>{type.icon} {type.label}</button>)}</nav><div><label className="mine-filter"><input type="checkbox" checked={mineOnly} onChange={(event) => setMineOnly(event.target.checked)} />我创建的</label><select className="tag-filter"><option>◇ 全部标签</option></select><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="⌕ 搜索" /><button className="studio-space-menu" onClick={onDeleteWorkspace} disabled={disabled}>•••</button></div></div><div className="studio-grid"><article className="studio-create-card"><strong>创建应用</strong><button onClick={onCreate} disabled={disabled}><span>＋</span><div>创建空白应用<small>选择类型，从零开始构建</small></div></button><button onClick={onCreate} disabled={disabled}><span>▤</span><div>从应用模板创建<small>使用预置场景快速开始</small></div></button><button onClick={onCreate} disabled={disabled}><span>↪</span><div>导入 DSL 文件<small>恢复或迁移已有应用</small></div></button></article>{visible.map((item) => { const type = appTypes.find((entry) => entry.id === item.app_type); return <article className="studio-card" key={item.id} onClick={() => onOpen(item)}><header><span>{type?.icon ?? "✦"}<b>{item.app_type === "workflow" ? "⌘" : "◉"}</b></span><div><h3>{item.name}</h3><small>LOB Flow · 编辑于 {new Date(item.updated_at).toLocaleDateString()}</small></div><button onClick={(event) => { event.stopPropagation(); onDelete(item); }}>•••</button></header><p>{item.description || type?.description}</p><footer><span>◇ 添加标签</span><i>{type?.label}</i></footer></article>; })}</div>{!visible.length && allApps.length > 0 && <div className="knowledge-empty">没有匹配的应用</div>}</section>;
 }
 
 function Welcome({ onCreate, disabled }: { onCreate: () => void; disabled: boolean }) {

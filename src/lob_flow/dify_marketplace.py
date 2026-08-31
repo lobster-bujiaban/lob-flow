@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 from lob_flow.dify_daemon import DifyDaemonClient, DifyDaemonError
@@ -37,7 +38,7 @@ class DifyMarketplaceClient:
                 "label": label.get("zh_Hans") or label.get("en_US") or item.get("name", ""),
                 "description": brief.get("zh_Hans") or brief.get("en_US") or "",
                 "category": detail.get("category", "extension"),
-                "icon_url": f"{self.base_url}/plugins/{icon}" if icon else "",
+                "icon_url": f"/api/dify-marketplace/icons/{quote(plugin_id, safe='/')}" if icon else "",
                 "install_count": detail.get("install_count", 0),
                 "verified": detail.get("verification", {}).get("authorized_category") in {"langgenius", "partner"},
                 "version": item.get("latest_version", ""),
@@ -45,6 +46,28 @@ class DifyMarketplaceClient:
                 "updated_at": item.get("updated_at", ""),
             })
         return result
+
+    def load_icon(self, plugin_id: str) -> tuple[bytes, str]:
+        clean = plugin_id.strip("/")
+        parts = clean.split("/")
+        if len(parts) != 2 or any(not part or part in {".", ".."} for part in parts):
+            raise DifyDaemonError("Invalid Marketplace plugin id")
+        request = Request(
+            f"{self.base_url}/plugins/{quote(clean, safe='/')}/icon",
+            headers={"X-Dify-Version": "1.14.2", "User-Agent": "LOB-Flow/0.1"},
+        )
+        try:
+            data = self._read_with_retry(request, 20, 2_000_001)
+        except Exception as exc:
+            raise DifyDaemonError(f"Failed to load Marketplace icon: {exc}") from exc
+        if len(data) > 2_000_000:
+            raise DifyDaemonError("Marketplace icon exceeds 2 MB")
+        stripped = data.lstrip()
+        media_type = "image/svg+xml" if stripped.startswith((b"<svg", b"<?xml")) else (
+            "image/png" if data.startswith(b"\x89PNG") else
+            "image/webp" if data.startswith(b"RIFF") else "image/jpeg"
+        )
+        return data, media_type
 
     def _batch_details(self, plugin_ids: list[str]) -> list[dict]:
         body = json.dumps({"plugin_ids": plugin_ids}).encode()

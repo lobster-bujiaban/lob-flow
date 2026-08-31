@@ -25,6 +25,8 @@ export interface App {
   description: string;
   app_type: AppType;
   draft: DraftDefinition;
+  created_at: string;
+  updated_at: string;
 }
 
 export type AppType = "workflow" | "chatflow" | "chat_assistant" | "agent" | "text_generation";
