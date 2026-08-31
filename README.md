@@ -1,5 +1,7 @@
 # LOB Flow
 
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+
 从零掌握 AI 应用平台的核心链路，并参考 Dify 分阶段实现模型接入、Prompt 应用、工作流、知识库、工具调用、发布与运行管理。
 
 本项目采用与 LOB Vector 相同的学习方法：围绕一条真实主链路逐阶段实现，每个阶段都保留可运行、可观察、可验收的结果。重点不是复刻 Dify 的全部页面，而是理解一个 AI 应用从配置、编排到发布运行的完整生命周期，并建立源码概念与自研实现之间的映射。
@@ -128,3 +130,17 @@ LOB_FLOW_ENCRYPTION_KEY=使用_openssl_rand_生成的_Fernet_密钥
 API Key 使用 Fernet 在服务端加密后保存到 PostgreSQL，浏览器和 Draft 都不保存密钥。
 每次 Run 会保存模型供应商、模型名、Token Usage、结束原因、耗时和错误分类；真实增量
 内容继续通过 SSE 和 `message_delta` 事件输出。
+
+## 交流与联系
+
+对实现细节有疑问、发现问题或想交流 AI 应用平台与工作流，可以扫码私信：
+
+<p align="center">
+  <img src="./docs/images/wechat-private-message-qr.png" alt="虾哥不加班微信私信二维码" width="220">
+</p>
+
+也欢迎通过 [GitHub Issues](https://github.com/lobster-bujiaban/lob-flow/issues) 提交可复现的问题和建议。
+
+## 许可证
+
+本项目使用 [Apache License 2.0](./LICENSE) 开源。

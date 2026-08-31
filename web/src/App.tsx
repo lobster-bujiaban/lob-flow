@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type { App as FlowApp, DraftDefinition, ProviderConfig, Workspace } from "./types";
+import lobsterLogo from "./assets/lobster-logo.png";
 
 type Tab = "chat" | "settings";
 
@@ -68,7 +69,7 @@ export function App() {
   return (
     <div className="shell">
       <aside className="sidebar">
-        <div className="brand"><span className="brand-mark">L</span><span>LOB Flow</span></div>
+        <div className="brand"><img className="brand-logo" src={lobsterLogo} alt="LOB" /><span className="brand-copy"><strong>LOB Flow</strong><small>AI 应用编排</small></span></div>
         <div className="section-label">工作空间</div>
         <div className="select-row">
           <select value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
@@ -121,6 +122,7 @@ function Welcome({ onCreate, disabled }: { onCreate: () => void; disabled: boole
 
 function ChatPanel({ app, onError }: { app: FlowApp; onError: (reason: unknown) => void }) {
   const [input, setInput] = useState("");
+  const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [running, setRunning] = useState(false);
   const [meta, setMeta] = useState("");
@@ -128,9 +130,10 @@ function ChatPanel({ app, onError }: { app: FlowApp; onError: (reason: unknown) 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!input.trim() || running) return;
-    setAnswer(""); setMeta(""); setRunning(true);
+    const message = input.trim();
+    setQuestion(message); setInput(""); setAnswer(""); setMeta(""); setRunning(true);
     try {
-      await api.streamRun(app.id, input.trim(), (item) => {
+      await api.streamRun(app.id, message, (item) => {
         if (item.type === "message_delta") setAnswer((value) => value + String(item.data.delta ?? ""));
         if (item.type === "model_completed") {
           const usage = item.data.usage as Record<string, number | null>;
@@ -145,11 +148,23 @@ function ChatPanel({ app, onError }: { app: FlowApp; onError: (reason: unknown) 
     <div className="chat-stage">
       <div className="chat-heading"><div><h2>对话调试</h2><p>{app.draft.model.model}</p></div><span className="draft-badge">DRAFT</span></div>
       <div className="conversation">
-        {!answer && !running && <div className="conversation-empty"><span>✦</span><h3>测试你的应用</h3><p>输入一条消息，观察模型输出和运行指标。</p></div>}
-        {(answer || running) && <div className="message"><div className="avatar">AI</div><div><div className="bubble">{answer || <span className="typing">正在思考</span>}</div>{meta && <div className="message-meta">{meta}</div>}</div></div>}
+        {!question && !answer && !running && <div className="conversation-empty"><span>✦</span><h3>测试你的应用</h3><p>输入一条消息，观察模型输出和运行指标。</p></div>}
+        {question && <div className="message user-message"><div><div className="bubble">{question}</div></div><div className="avatar user-avatar">你</div></div>}
+        {(answer || running) && <div className="message ai-message"><div className="avatar ai-avatar"><img src={lobsterLogo} alt="LOB AI" /></div><div><div className="bubble">{answer || <span className="typing">正在思考</span>}</div>{meta && <div className="message-meta">{meta}</div>}</div></div>}
       </div>
       <form className="composer" onSubmit={submit}>
-        <textarea value={input} onChange={(event) => setInput(event.target.value)} placeholder="输入消息，按发送开始调试…" rows={3} />
+        <textarea
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+          placeholder="输入消息，Enter 发送，Shift + Enter 换行…"
+          rows={3}
+        />
         <button className="send" disabled={running || !input.trim()}>{running ? "运行中" : "发送"}</button>
       </form>
     </div>
