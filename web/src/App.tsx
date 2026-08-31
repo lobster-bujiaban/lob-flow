@@ -1,9 +1,9 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import type { App as FlowApp, DraftDefinition, ProviderConfig, Workspace } from "./types";
+import type { App as FlowApp, DraftDefinition, ProviderConfig, WorkflowDefinition, WorkflowEvent, WorkflowNode, Workspace } from "./types";
 import lobsterLogo from "./assets/lobster-logo.png";
 
-type Tab = "chat" | "settings";
+type Tab = "chat" | "workflow" | "settings";
 
 export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -95,12 +95,15 @@ export function App() {
           <div><div className="eyebrow">AI APPLICATION</div><h1>{activeApp?.name ?? "选择或创建应用"}</h1></div>
           {activeApp && <div className="tabs">
             <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button>
+            <button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button>
             <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button>
           </div>}
         </header>
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
         {!activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
           <ChatPanel app={activeApp} onError={showError} />
+        ) : tab === "workflow" ? (
+          <WorkflowPanel app={activeApp} providers={providers} onError={showError} />
         ) : (
           <SettingsPanel
             app={activeApp}
@@ -226,4 +229,86 @@ function SettingsPanel(props: {
     </aside>
     {showCredential && <div className="modal-backdrop"><form className="modal" onSubmit={createCredential}><div className="modal-head"><div><h3>添加 OpenAI 配置</h3><p>OpenAI Chat Completions API</p></div><button type="button" onClick={() => setShowCredential(false)}>×</button></div><label>配置名称</label><input name="name" placeholder="例如：OpenAI" required /><label>Base URL</label><input name="base_url" defaultValue="https://api.openai.com/v1" required /><label>模型名称</label><input name="model" defaultValue="gpt-5.4" required /><label>API Key</label><input name="api_key" type="password" autoComplete="new-password" placeholder="仅在提交时传给后端" required /><div className="security-note">🔒 密钥由服务端加密，保存后不会再次返回明文。</div><button className="primary wide">保存配置</button></form></div>}
   </section>;
+}
+
+const nodeTypeLabel = { start: "START", template: "TEMPLATE", llm: "LLM", answer: "ANSWER" } as const;
+
+function WorkflowPanel({ app, providers, onError }: { app: FlowApp; providers: ProviderConfig[]; onError: (reason: unknown) => void }) {
+  const [definition, setDefinition] = useState<WorkflowDefinition | null>(null);
+  const [input, setInput] = useState("请介绍一下这个工作流");
+  const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [statuses, setStatuses] = useState<Record<string, string>>({});
+  const [outputs, setOutputs] = useState<Record<string, string>>({});
+  const [answer, setAnswer] = useState("");
+
+  useEffect(() => {
+    setDefinition(null); setStatuses({}); setOutputs({}); setAnswer("");
+    api.getWorkflow(app.id).then((draft) => setDefinition(draft.definition)).catch(onError);
+  }, [app.id]);
+
+  function updateNode(nodeId: string, patch: Record<string, unknown>) {
+    setDefinition((current) => current ? {
+      ...current,
+      nodes: current.nodes.map((node) => node.id === nodeId ? { ...node, config: { ...node.config, ...patch } } : node)
+    } : current);
+  }
+
+  async function save() {
+    if (!definition) return;
+    setSaving(true);
+    try { setDefinition((await api.updateWorkflow(app.id, definition)).definition); }
+    catch (reason) { onError(reason); }
+    finally { setSaving(false); }
+  }
+
+  async function run() {
+    if (!definition || !input.trim() || running) return;
+    setRunning(true); setStatuses({}); setOutputs({}); setAnswer("");
+    try {
+      await api.streamWorkflow(app.id, input.trim(), (event: WorkflowEvent) => {
+        const nodeId = event.node_id;
+        if (nodeId && event.type === "node_started") setStatuses((value) => ({ ...value, [nodeId]: "running" }));
+        if (nodeId && event.type === "node_delta") setOutputs((value) => ({ ...value, [nodeId]: (value[nodeId] ?? "") + String(event.data.delta ?? "") }));
+        if (nodeId && event.type === "node_succeeded") {
+          setStatuses((value) => ({ ...value, [nodeId]: "succeeded" }));
+          const output = event.data.output as { value?: string } | undefined;
+          if (output?.value) setOutputs((value) => ({ ...value, [nodeId]: output.value! }));
+        }
+        if (event.type === "workflow_succeeded") setAnswer(String(event.data.output ?? ""));
+        if (event.type === "workflow_failed") onError(`${event.data.error_code}: ${event.data.error}`);
+      });
+    } catch (reason) { onError(reason); }
+    finally { setRunning(false); }
+  }
+
+  if (!definition) return <div className="workflow-loading">正在加载工作流…</div>;
+  return <section className="workflow-wrap">
+    <div className="workflow-editor">
+      <div className="panel-title"><div><h2>工作流草稿</h2><p>按 DAG 顺序执行，每个节点都有独立状态与运行记录。</p></div><button className="primary" onClick={save} disabled={saving}>{saving ? "保存中" : "保存工作流"}</button></div>
+      <div className="workflow-chain">
+        {definition.nodes.map((node, index) => <div key={node.id} className="workflow-node-wrap">
+          {index > 0 && <div className="workflow-arrow">↓</div>}
+          <WorkflowNodeCard node={node} providers={providers} status={statuses[node.id]} output={outputs[node.id]} updateNode={updateNode} />
+        </div>)}
+      </div>
+    </div>
+    <aside className="workflow-debug">
+      <div><h3>运行调试</h3><p>保存后输入一条消息，观察节点依次执行。</p></div>
+      <textarea rows={6} value={input} onChange={(event) => setInput(event.target.value)} />
+      <button className="primary wide" onClick={run} disabled={running || !input.trim()}>{running ? "执行中" : "运行工作流"}</button>
+      {answer && <div className="workflow-answer"><span>最终回答</span><p>{answer}</p></div>}
+    </aside>
+  </section>;
+}
+
+function WorkflowNodeCard({ node, providers, status, output, updateNode }: { node: WorkflowNode; providers: ProviderConfig[]; status?: string; output?: string; updateNode: (id: string, patch: Record<string, unknown>) => void }) {
+  return <article className={`workflow-node node-${node.type} ${status ?? ""}`}>
+    <div className="workflow-node-head"><span className="node-type">{nodeTypeLabel[node.type]}</span><strong>{node.name}</strong><span className="node-status">{status === "running" ? "运行中" : status === "succeeded" ? "完成" : "待运行"}</span></div>
+    {node.type === "start" && <p className="node-description">接收工作流输入并写入变量 <code>input</code></p>}
+    {node.type === "template" && <div><label>Prompt 模板</label><textarea rows={3} value={String(node.config.template ?? "")} onChange={(event) => updateNode(node.id, { template: event.target.value })} /></div>}
+    {node.type === "llm" && <div className="form-grid two"><div><label>模型配置</label><select value={String(node.config.provider_config_id ?? "")} onChange={(event) => updateNode(node.id, { provider_config_id: event.target.value })}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select></div><div><label>模型</label><input value={String(node.config.model ?? "gpt-5.4")} onChange={(event) => updateNode(node.id, { model: event.target.value })} /></div><div className="node-system"><label>System Prompt</label><textarea rows={3} value={String(node.config.system_prompt ?? "")} onChange={(event) => updateNode(node.id, { system_prompt: event.target.value })} /></div></div>}
+    {node.type === "answer" && <p className="node-description">将上游 LLM 输出作为工作流最终回答。</p>}
+    {output && <div className="node-output"><span>输出</span><p>{output}</p></div>}
+  </article>;
 }

@@ -41,3 +41,31 @@ export interface RunEvent {
   type: string;
   data: Record<string, unknown>;
 }
+
+export type WorkflowNodeType = "start" | "template" | "llm" | "answer";
+
+export interface WorkflowNode {
+  id: string;
+  type: WorkflowNodeType;
+  name: string;
+  config: Record<string, unknown>;
+}
+
+export interface WorkflowDefinition {
+  nodes: WorkflowNode[];
+  edges: Array<{ source: string; target: string }>;
+}
+
+export interface WorkflowDraft {
+  app_id: string;
+  definition: WorkflowDefinition;
+  updated_at: string;
+}
+
+export interface WorkflowEvent {
+  workflow_run_id: string;
+  sequence: number;
+  type: string;
+  node_id: string | null;
+  data: Record<string, unknown>;
+}

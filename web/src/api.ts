@@ -1,4 +1,4 @@
-import type { App, DraftDefinition, ProviderConfig, RunEvent, Workspace } from "./types";
+import type { App, DraftDefinition, ProviderConfig, RunEvent, WorkflowDefinition, WorkflowDraft, WorkflowEvent, Workspace } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -41,6 +41,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body)
     }),
+  getWorkflow: (appId: string) =>
+    request<WorkflowDraft>(`/api/apps/${appId}/workflow`),
+  updateWorkflow: (appId: string, definition: WorkflowDefinition) =>
+    request<WorkflowDraft>(`/api/apps/${appId}/workflow`, {
+      method: "PUT",
+      body: JSON.stringify(definition)
+    }),
   async streamRun(appId: string, input: string, onEvent: (event: RunEvent) => void) {
     const response = await fetch(`/api/apps/${appId}/runs/stream`, {
       method: "POST",
@@ -63,6 +70,28 @@ export const api = {
           .find((line) => line.startsWith("data: "))
           ?.slice(6);
         if (data) onEvent(JSON.parse(data) as RunEvent);
+      }
+      if (done) break;
+    }
+  },
+  async streamWorkflow(appId: string, input: string, onEvent: (event: WorkflowEvent) => void) {
+    const response = await fetch(`/api/apps/${appId}/workflow-runs/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ input })
+    });
+    if (!response.ok || !response.body) throw new Error(`工作流运行失败：${response.status}`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() ?? "";
+      for (const block of blocks) {
+        const data = block.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+        if (data) onEvent(JSON.parse(data) as WorkflowEvent);
       }
       if (done) break;
     }

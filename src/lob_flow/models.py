@@ -122,3 +122,78 @@ class RunEvent(BaseModel):
     type: EventType
     data: dict[str, Any]
     created_at: datetime
+
+
+NodeType = Literal["start", "template", "llm", "answer"]
+
+
+class WorkflowNode(BaseModel):
+    id: str = Field(min_length=1, max_length=100)
+    type: NodeType
+    name: str = Field(min_length=1, max_length=100)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkflowEdge(BaseModel):
+    source: str
+    target: str
+
+
+class WorkflowDefinition(BaseModel):
+    nodes: list[WorkflowNode]
+    edges: list[WorkflowEdge]
+
+
+class WorkflowDraft(BaseModel):
+    app_id: str
+    definition: WorkflowDefinition
+    updated_at: datetime
+
+
+class WorkflowRunCreate(BaseModel):
+    input: str = Field(min_length=1, max_length=20_000)
+
+
+class WorkflowRun(BaseModel):
+    id: str
+    app_id: str
+    status: Literal["running", "succeeded", "failed"]
+    input: str
+    output: str | None = None
+    error: str | None = None
+    error_code: str | None = None
+    definition_snapshot: WorkflowDefinition
+    created_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+
+
+class NodeRun(BaseModel):
+    id: str
+    workflow_run_id: str
+    node_id: str
+    node_type: NodeType
+    status: Literal["running", "succeeded", "failed"]
+    input: dict[str, Any]
+    output: dict[str, Any] | None = None
+    error: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+
+
+class WorkflowEvent(BaseModel):
+    workflow_run_id: str
+    sequence: int
+    type: Literal[
+        "workflow_started",
+        "node_started",
+        "node_delta",
+        "node_succeeded",
+        "node_failed",
+        "workflow_succeeded",
+        "workflow_failed",
+    ]
+    node_id: str | None = None
+    data: dict[str, Any]
+    created_at: datetime

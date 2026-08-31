@@ -55,7 +55,7 @@
 
 - [x] 阶段 0：AI 应用领域模型与最小 Chat App
 - [x] 阶段 1：模型网关与流式运行
-- [ ] 阶段 2：工作流定义、校验与 DAG 调度
+- [x] 阶段 2：工作流定义、校验与 DAG 调度
 - [ ] 阶段 3：变量系统、控制流与可靠执行
 - [ ] 阶段 4：知识库检索与 RAG 节点
 - [ ] 阶段 5：工具、Agent 与人工介入
@@ -130,6 +130,20 @@ LOB_FLOW_ENCRYPTION_KEY=使用_openssl_rand_生成的_Fernet_密钥
 API Key 使用 Fernet 在服务端加密后保存到 PostgreSQL，浏览器和 Draft 都不保存密钥。
 每次 Run 会保存模型供应商、模型名、Token Usage、结束原因、耗时和错误分类；真实增量
 内容继续通过 SSE 和 `message_delta` 事件输出。
+
+### 运行工作流
+
+管理端「工作流」页面提供 `Start → Template → LLM → Answer` 最小 DAG。可以编辑 Prompt
+模板、模型配置与 System Prompt，保存时会校验唯一入口、节点引用、不可达节点和循环依赖。
+运行时页面实时展示每个节点的状态、输出和最终回答。
+
+工作流定义、运行、节点运行与事件分别保存在 `workflow_drafts`、`workflow_runs`、
+`node_runs` 和 `workflow_events`。数据库结构由 Alembic 管理：
+
+```bash
+uv run alembic current
+uv run alembic upgrade head
+```
 
 ## 交流与联系
 

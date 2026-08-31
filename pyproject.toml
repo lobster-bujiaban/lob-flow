@@ -5,6 +5,7 @@ description = "A learning implementation of an AI application platform"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.16,<2",
     "cryptography>=45,<47",
     "fastapi>=0.116,<1",
     "psycopg[binary]>=3.2,<4",
