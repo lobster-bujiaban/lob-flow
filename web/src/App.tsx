@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import type { App as FlowApp, DraftDefinition, ProviderConfig, WorkflowDefinition, WorkflowEvent, WorkflowNode, Workspace } from "./types";
+import type { App as FlowApp, AppType, DraftDefinition, ProviderConfig, WorkflowDefinition, WorkflowEvent, WorkflowNode, Workspace } from "./types";
 import lobsterLogo from "./assets/lobster-logo.png";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { PluginMarketplace } from "./PluginMarketplace";
@@ -8,6 +8,15 @@ import { KnowledgeBase } from "./KnowledgeBase";
 import { ToolsLibrary } from "./ToolsLibrary";
 
 type Tab = "chat" | "workflow" | "knowledge" | "tools" | "plugins" | "settings";
+type AppFilter = "all" | AppType;
+
+const appTypes: Array<{ id: AppType; label: string; icon: string; description: string }> = [
+  { id: "workflow", label: "工作流", icon: "⌘", description: "面向自动化与批处理的可视化编排" },
+  { id: "chatflow", label: "Chatflow", icon: "▣", description: "带会话体验的可视化工作流" },
+  { id: "chat_assistant", label: "聊天助手", icon: "◉", description: "由 Prompt 驱动的多轮对话助手" },
+  { id: "agent", label: "Agent", icon: "♙", description: "可自主选择工具完成任务的智能体" },
+  { id: "text_generation", label: "文本生成", icon: "T", description: "单次输入、结构化生成文本" }
+];
 
 export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -17,8 +26,11 @@ export function App() {
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [tab, setTab] = useState<Tab>("chat");
   const [error, setError] = useState("");
+  const [appFilter, setAppFilter] = useState<AppFilter>("all");
+  const [showCreateApp, setShowCreateApp] = useState(false);
 
   const activeApp = useMemo(() => apps.find((item) => item.id === appId), [apps, appId]);
+  const visibleApps = useMemo(() => appFilter === "all" ? apps : apps.filter((item) => item.app_type === appFilter), [apps, appFilter]);
 
   useEffect(() => {
     api.listWorkspaces().then((items) => {
@@ -53,15 +65,21 @@ export function App() {
     } catch (reason) { showError(reason); }
   }
 
-  async function createApp() {
-    if (!workspaceId) return;
-    const name = window.prompt("应用名称");
-    if (!name?.trim()) return;
+  function createApp() { if (workspaceId) setShowCreateApp(true); }
+
+  async function submitCreateApp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); if (!workspaceId) return;
+    const data = new FormData(event.currentTarget);
+    const name = String(data.get("name") ?? "").trim();
+    const appType = String(data.get("app_type") ?? "chatflow") as AppType;
+    if (!name) return;
     try {
-      const created = await api.createApp(workspaceId, name.trim());
+      const created = await api.createApp(workspaceId, name, appType);
       setApps((items) => [...items, created]);
       setAppId(created.id);
-      setTab("chat");
+      setAppFilter(appType);
+      setTab(appType === "workflow" ? "workflow" : "chat");
+      setShowCreateApp(false);
       setError("");
     } catch (reason) { showError(reason); }
   }
@@ -109,12 +127,13 @@ export function App() {
           <button className="icon-button danger-icon" onClick={deleteWorkspace} disabled={!workspaceId} title="删除当前空间">×</button>
         </div>
         <div className="section-title"><span>应用</span><button className="text-button" onClick={createApp}>新建</button></div>
+        <div className="app-type-filter"><button className={appFilter === "all" ? "active" : ""} onClick={() => setAppFilter("all")}>全部</button>{appTypes.map((type) => <button key={type.id} title={type.label} className={appFilter === type.id ? "active" : ""} onClick={() => setAppFilter(type.id)}>{type.icon}</button>)}</div>
         <nav className="app-list">
-          {apps.map((item) => <div key={item.id} className={item.id === appId ? "app-row active" : "app-row"}>
-            <button className="app-item" onClick={() => setAppId(item.id)}><span className="app-icon">✦</span><span>{item.name}</span></button>
+          {visibleApps.map((item) => <div key={item.id} className={item.id === appId ? "app-row active" : "app-row"}>
+            <button className="app-item" onClick={() => setAppId(item.id)}><span className="app-icon">{appTypes.find((type) => type.id === item.app_type)?.icon ?? "✦"}</span><span><strong>{item.name}</strong><small>{appTypes.find((type) => type.id === item.app_type)?.label}</small></span></button>
             <button className="app-delete" onClick={() => deleteApp(item)} title={`删除 ${item.name}`}>×</button>
           </div>)}
-          {!apps.length && <div className="empty-small">还没有应用</div>}
+          {!visibleApps.length && <div className="empty-small">{apps.length ? "此分类暂无应用" : "还没有应用"}</div>}
         </nav>
         <div className="sidebar-foot"><span className="status-dot" />PostgreSQL 已连接</div>
       </aside>
@@ -149,6 +168,7 @@ export function App() {
           />
         )}
       </main>
+      {showCreateApp && <div className="modal-backdrop"><form className="modal app-create-modal" onSubmit={submitCreateApp}><div className="modal-head"><div><h3>创建应用</h3><p>应用类型决定默认运行方式，创建后仍可使用工作流编排。</p></div><button type="button" onClick={() => setShowCreateApp(false)}>×</button></div><label>应用名称</label><input name="name" required autoFocus placeholder="例如：客户支持 Agent" /><label>应用类型</label><div className="app-type-options">{appTypes.map((type, index) => <label key={type.id}><input type="radio" name="app_type" value={type.id} defaultChecked={index === 1} /><span><i>{type.icon}</i><strong>{type.label}</strong><small>{type.description}</small></span></label>)}</div><button className="primary wide">创建应用</button></form></div>}
     </div>
   );
 }

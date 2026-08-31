@@ -23,8 +23,11 @@ export interface App {
   workspace_id: string;
   name: string;
   description: string;
+  app_type: AppType;
   draft: DraftDefinition;
 }
+
+export type AppType = "workflow" | "chatflow" | "chat_assistant" | "agent" | "text_generation";
 
 export interface ProviderConfig {
   id: string;

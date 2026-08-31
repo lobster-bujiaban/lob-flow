@@ -1,4 +1,4 @@
-import type { App, Dataset, DatasetDocument, DocumentSegment, DraftDefinition, PluginCatalogItem, ProviderConfig, RetrievalResult, RunEvent, WorkflowDefinition, WorkflowDraft, WorkflowEvent, Workspace } from "./types";
+import type { App, AppType, Dataset, DatasetDocument, DocumentSegment, DraftDefinition, PluginCatalogItem, ProviderConfig, RetrievalResult, RunEvent, WorkflowDefinition, WorkflowDraft, WorkflowEvent, Workspace } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -35,10 +35,10 @@ export const api = {
   retrieveDataset: (datasetId: string, query: string, topK = 3) => request<{ query: string; results: RetrievalResult[]; duration_ms: number }>(`/api/datasets/${datasetId}/retrieve`, { method: "POST", body: JSON.stringify({ query, top_k: topK }) }),
   listApps: (workspaceId: string) =>
     request<App[]>(`/api/workspaces/${workspaceId}/apps`),
-  createApp: (workspaceId: string, name: string) =>
+  createApp: (workspaceId: string, name: string, appType: AppType) =>
     request<App>(`/api/workspaces/${workspaceId}/apps`, {
       method: "POST",
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name, app_type: appType })
     }),
   deleteApp: (appId: string) =>
     request<void>(`/api/apps/${appId}`, { method: "DELETE" }),

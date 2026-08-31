@@ -72,6 +72,7 @@ class FlowService:
             workspace_id=workspace_id,
             name=request.name,
             description=request.description,
+            app_type=request.app_type,
             draft=request.draft,
             created_at=timestamp,
             updated_at=timestamp,
@@ -79,13 +80,14 @@ class FlowService:
         with self.database.connect() as connection:
             connection.execute(
                 """INSERT INTO apps
-                   (id, workspace_id, name, description, draft_json, created_at, updated_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                   (id, workspace_id, name, description, app_type, draft_json, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     app.id,
                     app.workspace_id,
                     app.name,
                     app.description,
+                    app.app_type,
                     app.draft.model_dump_json(),
                     app.created_at.isoformat(),
                     app.updated_at.isoformat(),

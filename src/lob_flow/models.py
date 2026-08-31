@@ -30,9 +30,13 @@ class DraftDefinition(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
 
 
+AppType = Literal["workflow", "chatflow", "chat_assistant", "agent", "text_generation"]
+
+
 class AppCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=500)
+    app_type: AppType = "chatflow"
     draft: DraftDefinition = Field(default_factory=DraftDefinition)
 
 
@@ -41,6 +45,7 @@ class App(BaseModel):
     workspace_id: str
     name: str
     description: str
+    app_type: AppType
     draft: DraftDefinition
     created_at: datetime
     updated_at: datetime
