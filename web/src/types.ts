@@ -49,6 +49,7 @@ export interface WorkflowNode {
   type: WorkflowNodeType;
   name: string;
   config: Record<string, unknown>;
+  position: { x?: number; y?: number };
 }
 
 export interface WorkflowDefinition {

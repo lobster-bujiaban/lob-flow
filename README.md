@@ -133,9 +133,10 @@ API Key 使用 Fernet 在服务端加密后保存到 PostgreSQL，浏览器和 D
 
 ### 运行工作流
 
-管理端「工作流」页面提供 `Start → Template → LLM → Answer` 最小 DAG。可以编辑 Prompt
-模板、模型配置与 System Prompt，保存时会校验唯一入口、节点引用、不可达节点和循环依赖。
-运行时页面实时展示每个节点的状态、输出和最终回答。
+管理端「工作流」页面提供 Dify 风格可视化画布：节点拖拽、端口连线、缩放、平移、MiniMap，
+以及 Template、LLM、Answer 节点的添加和删除。选中节点后在右侧编辑 Prompt、模型配置、
+System Prompt 和运行参数。节点坐标与连线一同保存，提交时校验唯一入口、节点引用、不可达
+节点和循环依赖；运行时画布实时展示每个节点的状态、输出和最终回答。
 
 工作流定义、运行、节点运行与事件分别保存在 `workflow_drafts`、`workflow_runs`、
 `node_runs` 和 `workflow_events`。数据库结构由 Alembic 管理：

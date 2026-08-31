@@ -157,3 +157,22 @@ select:focus, input:focus, textarea:focus { border-color: var(--orange); box-sha
 .workflow-answer { margin-top: 16px; padding: 13px; border: 1px solid #f0d9ca; border-radius: 10px; background: var(--orange-soft); }
 .provider-add { margin-top: 12px; }
 @media (max-width: 1180px) { .workflow-wrap { grid-template-columns: 1fr; overflow-y: auto; }.workflow-editor { overflow: visible; }.workflow-debug { order: -1; } }
+
+.flow-canvas-shell { display: grid; grid-template-rows: 64px minmax(0,1fr); height: calc(100vh - 80px); background: var(--canvas); }
+.flow-toolbar { display: grid; grid-template-columns: 1fr auto auto; gap: 18px; align-items: center; padding: 10px 22px; border-bottom: 1px solid var(--line); background: var(--paper); }
+.flow-toolbar > div:first-child { display: flex; flex-direction: column; }.flow-toolbar strong { font-size: 14px; }.flow-toolbar span { color: var(--muted); font-size: 10px; }
+.flow-add-buttons { display: flex; gap: 7px; }.flow-add-buttons button { padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink-soft); font-size: 11px; cursor: pointer; }.flow-add-buttons button:hover { color: var(--orange-dark); border-color: #efb99f; background: var(--orange-soft); }
+.flow-canvas-main { display: grid; grid-template-columns: minmax(0,1fr) 330px; min-height: 0; }
+.flow-board { min-width: 0; min-height: 0; background: #f7f4ee; }
+.flow-inspector { overflow-y: auto; padding: 19px; border-left: 1px solid var(--line); background: #fff; }
+.canvas-node { width: 210px; min-height: 88px; padding: 14px; border: 1px solid var(--line); border-top: 4px solid var(--navy); border-radius: 13px; background: #fff; color: var(--ink); box-shadow: 0 9px 28px rgba(37,49,67,.1); }
+.canvas-node.node-template { border-top-color: #d18b35; }.canvas-node.node-llm { border-top-color: var(--orange); }.canvas-node.node-answer { border-top-color: var(--green); }
+.canvas-node.selected { outline: 3px solid rgba(237,90,42,.16); border-color: var(--orange); }.canvas-node.running { box-shadow: 0 0 0 4px rgba(237,90,42,.12), 0 9px 28px rgba(37,49,67,.1); }.canvas-node.succeeded { background: #fbfffc; }
+.canvas-node-title { display: flex; align-items: center; gap: 8px; }.canvas-node-title span { padding: 3px 6px; border-radius: 5px; color: var(--orange-dark); background: var(--orange-soft); font-size: 8px; font-weight: 800; letter-spacing: .08em; }.canvas-node-title strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-node > p { margin: 9px 0 0; color: var(--muted); font-size: 10px; }.canvas-node-preview { overflow: hidden; max-height: 44px; margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line); color: var(--ink-soft); font-size: 9px; line-height: 1.5; }
+.react-flow__handle { width: 10px; height: 10px; border: 2px solid #fff; background: var(--orange); }.react-flow__edge-path { stroke: #ad8f79; stroke-width: 2; }.react-flow__edge.selected .react-flow__edge-path { stroke: var(--orange); stroke-width: 3; }
+.react-flow__controls { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); }.react-flow__controls button { color: var(--ink); background: #fff; border-color: var(--line); }.react-flow__minimap { border: 1px solid var(--line); border-radius: 10px; background: #fff !important; box-shadow: var(--shadow); }
+.inspector-content { display: grid; gap: 12px; }.inspector-title { display: flex; align-items: center; gap: 9px; margin-bottom: 4px; padding-bottom: 13px; border-bottom: 1px solid var(--line); }.inspector-title span { padding: 4px 7px; border-radius: 6px; color: var(--orange-dark); background: var(--orange-soft); font-size: 9px; font-weight: 800; letter-spacing: .08em; }.inspector-title h3 { margin: 0; font-size: 15px; }
+.inspector-content label { margin-bottom: -6px; }.inspector-hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }.inspector-hint code { color: var(--orange-dark); }.inspector-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }.inspector-grid label { margin-bottom: 6px; }
+.danger-button { margin-top: 10px; padding: 9px 12px; border: 1px solid #efc0bc; border-radius: 8px; background: #fff5f4; color: var(--red); cursor: pointer; }.danger-button:hover { background: #fce8e6; }
+@media (max-width: 1080px) { .flow-canvas-main { grid-template-columns: minmax(0,1fr) 290px; }.flow-toolbar { grid-template-columns: 1fr auto; }.flow-add-buttons { grid-row: 2; grid-column: 1 / -1; } }

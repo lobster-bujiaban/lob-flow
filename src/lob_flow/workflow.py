@@ -14,12 +14,13 @@ class WorkflowValidationError(ValueError):
 def default_workflow(draft: DraftDefinition) -> WorkflowDefinition:
     return WorkflowDefinition(
         nodes=[
-            WorkflowNode(id="start", type="start", name="开始"),
+            WorkflowNode(id="start", type="start", name="开始", position={"x": 80, "y": 220}),
             WorkflowNode(
                 id="template",
                 type="template",
                 name="Prompt 模板",
                 config={"template": draft.user_prompt_template},
+                position={"x": 340, "y": 220},
             ),
             WorkflowNode(
                 id="llm",
@@ -33,8 +34,9 @@ def default_workflow(draft: DraftDefinition) -> WorkflowDefinition:
                     "max_tokens": min(draft.model.max_tokens, 512),
                     "timeout_seconds": draft.model.timeout_seconds,
                 },
+                position={"x": 620, "y": 220},
             ),
-            WorkflowNode(id="answer", type="answer", name="回答"),
+            WorkflowNode(id="answer", type="answer", name="回答", position={"x": 900, "y": 220}),
         ],
         edges=[
             WorkflowEdge(source="start", target="template"),

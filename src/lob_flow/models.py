@@ -132,6 +132,7 @@ class WorkflowNode(BaseModel):
     type: NodeType
     name: str = Field(min_length=1, max_length=100)
     config: dict[str, Any] = Field(default_factory=dict)
+    position: dict[str, float] = Field(default_factory=dict)
 
 
 class WorkflowEdge(BaseModel):

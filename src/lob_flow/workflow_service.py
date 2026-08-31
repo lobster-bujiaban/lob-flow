@@ -85,6 +85,10 @@ class WorkflowService:
             )
         sequence = 1
         yield self._event(run_id, sequence, "workflow_started", None, {"input": user_input})
+        predecessors: dict[str, list[str]] = {node.id: [] for node in ordered}
+        for edge in draft.definition.edges:
+            predecessors[edge.target].append(edge.source)
+        node_values: dict[str, str] = {}
         value = user_input
         run_started = monotonic()
         current_node_id: str | None = None
@@ -92,6 +96,11 @@ class WorkflowService:
 
         try:
             for node in ordered:
+                if node.type == "start":
+                    value = user_input
+                else:
+                    upstream_values = [node_values[node_id] for node_id in predecessors[node.id]]
+                    value = upstream_values[0] if len(upstream_values) == 1 else "\n".join(upstream_values)
                 node_run_id = str(uuid4())
                 current_node_id = node.id
                 current_node_run_id = node_run_id
@@ -150,6 +159,8 @@ class WorkflowService:
                             )
                     value = "".join(parts)
 
+                node_values[node.id] = value
+
                 node_duration = int((monotonic() - node_started) * 1000)
                 node_output = {"value": value}
                 with self.database.connect() as connection:
@@ -176,6 +187,8 @@ class WorkflowService:
                 current_node_id = None
                 current_node_run_id = None
 
+            answer_nodes = [node for node in ordered if node.type == "answer"]
+            value = node_values[answer_nodes[-1].id]
             duration = int((monotonic() - run_started) * 1000)
             with self.database.connect() as connection:
                 connection.execute(

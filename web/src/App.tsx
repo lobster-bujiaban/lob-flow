@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import type { App as FlowApp, DraftDefinition, ProviderConfig, WorkflowDefinition, WorkflowEvent, WorkflowNode, Workspace } from "./types";
 import lobsterLogo from "./assets/lobster-logo.png";
+import { WorkflowCanvas } from "./WorkflowCanvas";
 
 type Tab = "chat" | "workflow" | "settings";
 
@@ -103,7 +104,7 @@ export function App() {
         {!activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
           <ChatPanel app={activeApp} onError={showError} />
         ) : tab === "workflow" ? (
-          <WorkflowPanel app={activeApp} providers={providers} onError={showError} />
+          <WorkflowCanvas app={activeApp} providers={providers} onError={showError} />
         ) : (
           <SettingsPanel
             app={activeApp}
