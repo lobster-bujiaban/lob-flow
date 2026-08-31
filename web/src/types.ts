@@ -42,7 +42,7 @@ export interface RunEvent {
   data: Record<string, unknown>;
 }
 
-export type WorkflowNodeType = "start" | "template" | "llm" | "answer";
+export type WorkflowNodeType = "start" | "template" | "llm" | "tool" | "answer";
 
 export interface WorkflowNode {
   id: string;
@@ -69,4 +69,32 @@ export interface WorkflowEvent {
   type: string;
   node_id: string | null;
   data: Record<string, unknown>;
+}
+
+export interface ToolDeclaration {
+  name: string;
+  label: string;
+  description: string;
+  parameters: Record<string, { type: string; required?: boolean }>;
+}
+
+export interface PluginManifest {
+  plugin_id: string;
+  name: string;
+  author: string;
+  version: string;
+  category: "tool";
+  description: string;
+  icon: string;
+  verified: boolean;
+  credential_schema: Record<string, { type: string; required?: boolean }>;
+  tools: ToolDeclaration[];
+}
+
+export interface PluginCatalogItem {
+  manifest: PluginManifest;
+  installed: boolean;
+  enabled: boolean;
+  installation_id: string | null;
+  has_credentials: boolean;
 }

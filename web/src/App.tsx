@@ -3,8 +3,9 @@ import { api } from "./api";
 import type { App as FlowApp, DraftDefinition, ProviderConfig, WorkflowDefinition, WorkflowEvent, WorkflowNode, Workspace } from "./types";
 import lobsterLogo from "./assets/lobster-logo.png";
 import { WorkflowCanvas } from "./WorkflowCanvas";
+import { PluginMarketplace } from "./PluginMarketplace";
 
-type Tab = "chat" | "workflow" | "settings";
+type Tab = "chat" | "workflow" | "plugins" | "settings";
 
 export function App() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -63,6 +64,31 @@ export function App() {
     } catch (reason) { showError(reason); }
   }
 
+  async function deleteWorkspace() {
+    const workspace = workspaces.find((item) => item.id === workspaceId);
+    if (!workspace || !window.confirm(`确定删除空间“${workspace.name}”吗？\n该空间内的应用、工作流、运行记录和插件配置都会永久删除。`)) return;
+    try {
+      await api.deleteWorkspace(workspace.id);
+      const remaining = workspaces.filter((item) => item.id !== workspace.id);
+      setWorkspaces(remaining);
+      setWorkspaceId(remaining[0]?.id ?? "");
+      setApps([]);
+      setAppId("");
+      setError("");
+    } catch (reason) { showError(reason); }
+  }
+
+  async function deleteApp(item: FlowApp) {
+    if (!window.confirm(`确定删除应用“${item.name}”吗？\n相关工作流和全部运行记录都会永久删除。`)) return;
+    try {
+      await api.deleteApp(item.id);
+      const remaining = apps.filter((app) => app.id !== item.id);
+      setApps(remaining);
+      if (appId === item.id) setAppId(remaining[0]?.id ?? "");
+      setError("");
+    } catch (reason) { showError(reason); }
+  }
+
   function replaceApp(updated: FlowApp) {
     setApps((items) => items.map((item) => item.id === updated.id ? updated : item));
   }
@@ -78,14 +104,14 @@ export function App() {
             {workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
           </select>
           <button className="icon-button" onClick={createWorkspace} title="新建空间">＋</button>
+          <button className="icon-button danger-icon" onClick={deleteWorkspace} disabled={!workspaceId} title="删除当前空间">×</button>
         </div>
         <div className="section-title"><span>应用</span><button className="text-button" onClick={createApp}>新建</button></div>
         <nav className="app-list">
-          {apps.map((item) => (
-            <button key={item.id} className={item.id === appId ? "app-item active" : "app-item"} onClick={() => setAppId(item.id)}>
-              <span className="app-icon">✦</span><span>{item.name}</span>
-            </button>
-          ))}
+          {apps.map((item) => <div key={item.id} className={item.id === appId ? "app-row active" : "app-row"}>
+            <button className="app-item" onClick={() => setAppId(item.id)}><span className="app-icon">✦</span><span>{item.name}</span></button>
+            <button className="app-delete" onClick={() => deleteApp(item)} title={`删除 ${item.name}`}>×</button>
+          </div>)}
           {!apps.length && <div className="empty-small">还没有应用</div>}
         </nav>
         <div className="sidebar-foot"><span className="status-dot" />PostgreSQL 已连接</div>
@@ -97,6 +123,7 @@ export function App() {
           {activeApp && <div className="tabs">
             <button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button>
             <button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button>
+            <button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>插件市场</button>
             <button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button>
           </div>}
         </header>
@@ -104,7 +131,9 @@ export function App() {
         {!activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
           <ChatPanel app={activeApp} onError={showError} />
         ) : tab === "workflow" ? (
-          <WorkflowCanvas app={activeApp} providers={providers} onError={showError} />
+          <WorkflowCanvas app={activeApp} workspaceId={workspaceId} providers={providers} onError={showError} />
+        ) : tab === "plugins" ? (
+          <PluginMarketplace workspaceId={workspaceId} onError={showError} />
         ) : (
           <SettingsPanel
             app={activeApp}
@@ -232,7 +261,7 @@ function SettingsPanel(props: {
   </section>;
 }
 
-const nodeTypeLabel = { start: "START", template: "TEMPLATE", llm: "LLM", answer: "ANSWER" } as const;
+const nodeTypeLabel = { start: "START", template: "TEMPLATE", llm: "LLM", tool: "TOOL", answer: "ANSWER" } as const;
 
 function WorkflowPanel({ app, providers, onError }: { app: FlowApp; providers: ProviderConfig[]; onError: (reason: unknown) => void }) {
   const [definition, setDefinition] = useState<WorkflowDefinition | null>(null);

@@ -74,6 +74,10 @@ def validate_and_sort(definition: WorkflowDefinition) -> list[WorkflowNode]:
             for key in ("provider_config_id", "model"):
                 if not node.config.get(key):
                     errors.append(f"LLM 节点 {node.id} 缺少 {key}")
+        if node.type == "tool":
+            for key in ("plugin_id", "tool_name"):
+                if not node.config.get(key):
+                    errors.append(f"Tool 节点 {node.id} 缺少 {key}")
     if errors:
         raise WorkflowValidationError(errors)
 

@@ -1,4 +1,4 @@
-import type { App, DraftDefinition, ProviderConfig, RunEvent, WorkflowDefinition, WorkflowDraft, WorkflowEvent, Workspace } from "./types";
+import type { App, DraftDefinition, PluginCatalogItem, ProviderConfig, RunEvent, WorkflowDefinition, WorkflowDraft, WorkflowEvent, Workspace } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -9,6 +9,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.detail ?? `请求失败：${response.status}`);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -19,6 +20,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name })
     }),
+  deleteWorkspace: (workspaceId: string) =>
+    request<void>(`/api/workspaces/${workspaceId}`, { method: "DELETE" }),
   listApps: (workspaceId: string) =>
     request<App[]>(`/api/workspaces/${workspaceId}/apps`),
   createApp: (workspaceId: string, name: string) =>
@@ -26,6 +29,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name })
     }),
+  deleteApp: (appId: string) =>
+    request<void>(`/api/apps/${appId}`, { method: "DELETE" }),
   updateDraft: (appId: string, draft: DraftDefinition) =>
     request<App>(`/api/apps/${appId}/draft`, {
       method: "PUT",
@@ -40,6 +45,20 @@ export const api = {
     request<ProviderConfig>(`/api/workspaces/${workspaceId}/model-provider-configs`, {
       method: "POST",
       body: JSON.stringify(body)
+    }),
+  listPlugins: (workspaceId: string) =>
+    request<PluginCatalogItem[]>(`/api/workspaces/${workspaceId}/plugins`),
+  installPlugin: (workspaceId: string, pluginId: string, credentials: Record<string, string> = {}) =>
+    request(`/api/workspaces/${workspaceId}/plugins/${pluginId}/install`, {
+      method: "POST", body: JSON.stringify({ credentials })
+    }),
+  enablePlugin: (workspaceId: string, pluginId: string, enabled: boolean) =>
+    request(`/api/workspaces/${workspaceId}/plugins/${pluginId}/enabled`, {
+      method: "PUT", body: JSON.stringify({ enabled })
+    }),
+  uninstallPlugin: (workspaceId: string, pluginId: string) =>
+    fetch(`/api/workspaces/${workspaceId}/plugins/${pluginId}`, { method: "DELETE" }).then((response) => {
+      if (!response.ok) throw new Error(`卸载失败：${response.status}`);
     }),
   getWorkflow: (appId: string) =>
     request<WorkflowDraft>(`/api/apps/${appId}/workflow`),

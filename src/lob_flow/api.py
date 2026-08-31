@@ -17,6 +17,10 @@ from lob_flow.models import (
     ModelProviderConfig,
     ModelProviderConfigCreate,
     ModelProviderConfigUpdate,
+    PluginCatalogItem,
+    PluginEnableRequest,
+    PluginInstallRequest,
+    PluginInstallation,
     Run,
     RunCreate,
     RunEvent,
@@ -29,6 +33,7 @@ from lob_flow.models import (
     Workspace,
     WorkspaceCreate,
 )
+from lob_flow.plugin_service import PluginService
 from lob_flow.service import FlowService, NotFoundError
 from lob_flow.workflow import WorkflowValidationError
 from lob_flow.workflow_service import WorkflowService
@@ -38,11 +43,14 @@ def create_app(database: Database | None = None) -> FastAPI:
     database = database or Database.from_env()
     service = FlowService(database)
     workflow_service = WorkflowService(database, service.model_gateway)
+    plugin_service = PluginService(database, service.cipher)
+    workflow_service.plugin_service = plugin_service
     web_dist = Path(__file__).resolve().parents[2] / "web" / "dist"
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         database.initialize()
+        plugin_service.ensure_catalog()
         yield
 
     application = FastAPI(title="LOB Flow", version="0.1.0", lifespan=lifespan)
@@ -80,6 +88,10 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.get("/api/workspaces", response_model=list[Workspace])
     def list_workspaces() -> list[Workspace]:
         return service.list_workspaces()
+
+    @application.delete("/api/workspaces/{workspace_id}", status_code=204)
+    def delete_workspace(workspace_id: str) -> None:
+        service.delete_workspace(workspace_id)
 
     @application.post(
         "/api/workspaces/{workspace_id}/apps", response_model=App, status_code=201
@@ -119,9 +131,46 @@ def create_app(database: Database | None = None) -> FastAPI:
     ) -> ModelProviderConfig:
         return service.update_model_provider_config(workspace_id, config_id, request)
 
+    @application.get(
+        "/api/workspaces/{workspace_id}/plugins",
+        response_model=list[PluginCatalogItem],
+    )
+    def plugin_marketplace(workspace_id: str) -> list[PluginCatalogItem]:
+        service.get_workspace(workspace_id)
+        return plugin_service.marketplace(workspace_id)
+
+    @application.post(
+        "/api/workspaces/{workspace_id}/plugins/{plugin_id:path}/install",
+        response_model=PluginInstallation,
+    )
+    def install_plugin(
+        workspace_id: str, plugin_id: str, request: PluginInstallRequest
+    ) -> PluginInstallation:
+        service.get_workspace(workspace_id)
+        return plugin_service.install(workspace_id, plugin_id, request)
+
+    @application.put(
+        "/api/workspaces/{workspace_id}/plugins/{plugin_id:path}/enabled",
+        response_model=PluginInstallation,
+    )
+    def enable_plugin(
+        workspace_id: str, plugin_id: str, request: PluginEnableRequest
+    ) -> PluginInstallation:
+        return plugin_service.set_enabled(workspace_id, plugin_id, request.enabled)
+
+    @application.delete(
+        "/api/workspaces/{workspace_id}/plugins/{plugin_id:path}", status_code=204
+    )
+    def uninstall_plugin(workspace_id: str, plugin_id: str) -> None:
+        plugin_service.uninstall(workspace_id, plugin_id)
+
     @application.get("/api/apps/{app_id}", response_model=App)
     def get_chat_app(app_id: str) -> App:
         return service.get_app(app_id)
+
+    @application.delete("/api/apps/{app_id}", status_code=204)
+    def delete_chat_app(app_id: str) -> None:
+        service.delete_app(app_id)
 
     @application.put("/api/apps/{app_id}/draft", response_model=App)
     def update_draft(app_id: str, request: DraftDefinition) -> App:

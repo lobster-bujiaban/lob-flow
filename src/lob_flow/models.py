@@ -124,7 +124,7 @@ class RunEvent(BaseModel):
     created_at: datetime
 
 
-NodeType = Literal["start", "template", "llm", "answer"]
+NodeType = Literal["start", "template", "llm", "tool", "answer"]
 
 
 class WorkflowNode(BaseModel):
@@ -198,3 +198,50 @@ class WorkflowEvent(BaseModel):
     node_id: str | None = None
     data: dict[str, Any]
     created_at: datetime
+
+
+class ToolDeclaration(BaseModel):
+    name: str
+    label: str
+    description: str
+    parameters: dict[str, Any]
+
+
+class PluginManifest(BaseModel):
+    plugin_id: str
+    name: str
+    author: str
+    version: str
+    category: Literal["tool"] = "tool"
+    description: str
+    icon: str
+    verified: bool = False
+    credential_schema: dict[str, Any] = Field(default_factory=dict)
+    tools: list[ToolDeclaration]
+
+
+class PluginCatalogItem(BaseModel):
+    manifest: PluginManifest
+    installed: bool = False
+    enabled: bool = False
+    installation_id: str | None = None
+    has_credentials: bool = False
+
+
+class PluginInstallRequest(BaseModel):
+    credentials: dict[str, str] = Field(default_factory=dict)
+
+
+class PluginInstallation(BaseModel):
+    id: str
+    workspace_id: str
+    plugin_id: str
+    version: str
+    enabled: bool
+    has_credentials: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class PluginEnableRequest(BaseModel):
+    enabled: bool

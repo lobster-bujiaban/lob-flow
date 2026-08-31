@@ -53,6 +53,16 @@ class FlowService:
             )
         return workspace
 
+    def delete_workspace(self, workspace_id: str) -> None:
+        self.get_workspace(workspace_id)
+        with self.database.connect() as connection:
+            app_rows = connection.execute(
+                "SELECT id FROM apps WHERE workspace_id = %s", (workspace_id,)
+            ).fetchall()
+            for row in app_rows:
+                self._delete_app(connection, row["id"])
+            connection.execute("DELETE FROM workspaces WHERE id = %s", (workspace_id,))
+
     def create_app(self, workspace_id: str, request: AppCreate) -> App:
         self.get_workspace(workspace_id)
         self._validate_provider_reference(workspace_id, request.draft)
@@ -82,6 +92,22 @@ class FlowService:
                 ),
             )
         return app
+
+    def delete_app(self, app_id: str) -> None:
+        self.get_app(app_id)
+        with self.database.connect() as connection:
+            self._delete_app(connection, app_id)
+
+    @staticmethod
+    def _delete_app(connection, app_id: str) -> None:
+        connection.execute(
+            "DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE app_id = %s)",
+            (app_id,),
+        )
+        connection.execute("DELETE FROM runs WHERE app_id = %s", (app_id,))
+        connection.execute("DELETE FROM published_versions WHERE app_id = %s", (app_id,))
+        connection.execute("DELETE FROM workflow_runs WHERE app_id = %s", (app_id,))
+        connection.execute("DELETE FROM apps WHERE id = %s", (app_id,))
 
     def list_apps(self, workspace_id: str) -> list[App]:
         self.get_workspace(workspace_id)

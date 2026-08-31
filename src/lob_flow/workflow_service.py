@@ -16,6 +16,7 @@ from lob_flow.models import (
     WorkflowRun,
 )
 from lob_flow.provider import ModelGateway, ProviderError
+from lob_flow.plugin_service import PluginExecutionError, PluginService
 from lob_flow.service import NotFoundError, now
 from lob_flow.workflow import WorkflowValidationError, default_workflow, validate_and_sort
 
@@ -24,6 +25,7 @@ class WorkflowService:
     def __init__(self, database: Database, model_gateway: ModelGateway) -> None:
         self.database = database
         self.model_gateway = model_gateway
+        self.plugin_service: PluginService | None = None
 
     def get_draft(self, app_id: str) -> WorkflowDraft:
         app = self._get_app(app_id)
@@ -158,6 +160,38 @@ class WorkflowService:
                                 {"delta": chunk.delta},
                             )
                     value = "".join(parts)
+                elif node.type == "tool":
+                    if self.plugin_service is None:
+                        raise PluginExecutionError("Plugin service is unavailable")
+                    parameters = self._resolve_parameters(
+                        node.config.get("parameters", {}), value
+                    )
+                    invocation_id = str(uuid4())
+                    invocation_started = now()
+                    invocation_clock = monotonic()
+                    result = self.plugin_service.execute(
+                        app["workspace_id"],
+                        node.config["plugin_id"],
+                        node.config["tool_name"],
+                        parameters,
+                    )
+                    value = result.value
+                    with self.database.connect() as connection:
+                        connection.execute(
+                            """INSERT INTO tool_invocations
+                               (id, workflow_run_id, node_id, installation_id, plugin_id,
+                                tool_name, status, input_json, output_json, started_at,
+                                finished_at, duration_ms)
+                               VALUES (%s, %s, %s, %s, %s, %s, 'succeeded', %s, %s, %s, %s, %s)""",
+                            (
+                                invocation_id, run_id, node.id, result.installation_id,
+                                node.config["plugin_id"], node.config["tool_name"],
+                                json.dumps(parameters, ensure_ascii=False),
+                                json.dumps({"value": value}, ensure_ascii=False),
+                                invocation_started.isoformat(), now().isoformat(),
+                                int((monotonic() - invocation_clock) * 1000),
+                            ),
+                        )
 
                 node_values[node.id] = value
 
@@ -202,7 +236,9 @@ class WorkflowService:
                 run_id, sequence, "workflow_succeeded", None, {"output": value, "duration_ms": duration}
             )
         except Exception as exc:
-            error_code = exc.code if isinstance(exc, ProviderError) else "workflow_error"
+            error_code = exc.code if isinstance(exc, ProviderError) else (
+                "plugin_error" if isinstance(exc, PluginExecutionError) else "workflow_error"
+            )
             duration = int((monotonic() - run_started) * 1000)
             with self.database.connect() as connection:
                 if current_node_run_id:
@@ -315,3 +351,15 @@ class WorkflowService:
             ).fetchone()
         if row is None:
             raise WorkflowValidationError(["LLM 节点引用的模型配置不存在或不属于当前空间"])
+
+    @staticmethod
+    def _resolve_parameters(parameters: dict, value: str) -> dict:
+        def resolve(item):
+            if isinstance(item, str):
+                return item.replace("{input}", value)
+            if isinstance(item, dict):
+                return {key: resolve(child) for key, child in item.items()}
+            if isinstance(item, list):
+                return [resolve(child) for child in item]
+            return item
+        return resolve(parameters)

@@ -134,9 +134,20 @@ API Key 使用 Fernet 在服务端加密后保存到 PostgreSQL，浏览器和 D
 ### 运行工作流
 
 管理端「工作流」页面提供 Dify 风格可视化画布：节点拖拽、端口连线、缩放、平移、MiniMap，
-以及 Template、LLM、Answer 节点的添加和删除。选中节点后在右侧编辑 Prompt、模型配置、
+以及 Template、LLM、Tool、Answer 节点的添加和删除。选中节点后在右侧编辑 Prompt、模型配置、
 System Prompt 和运行参数。节点坐标与连线一同保存，提交时校验唯一入口、节点引用、不可达
 节点和循环依赖；运行时画布实时展示每个节点的状态、输出和最终回答。
+
+### 插件市场与 Tool 节点
+
+管理端「插件市场」支持按 Workspace 搜索、安装、启用、停用和卸载工具插件。当前内置
+Text Tools、JSON Tools 和受限的 HTTP Request；安装并启用后，插件声明的工具与参数会自动
+出现在工作流 Tool 节点配置面板。插件凭据由服务端加密保存，HTTP Request 仅允许公网 HTTPS
+地址并阻止本机和私网访问。
+
+插件目录、Workspace 安装记录和调用审计分别保存在 `plugin_catalog`、
+`plugin_installations` 和 `tool_invocations`。当前版本完成的是 Dify 风格 Tool 插件闭环，
+Model、Agent Strategy、Datasource 和 Trigger 类型插件尚未接入。
 
 工作流定义、运行、节点运行与事件分别保存在 `workflow_drafts`、`workflow_runs`、
 `node_runs` 和 `workflow_events`。数据库结构由 Alembic 管理：
