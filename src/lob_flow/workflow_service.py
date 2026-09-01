@@ -5,6 +5,8 @@ import psycopg
 import hashlib
 import secrets
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from time import sleep
 from collections.abc import Iterator
 from time import monotonic
 from uuid import uuid4
@@ -33,6 +35,10 @@ from lob_flow.knowledge_service import KnowledgeService
 from lob_flow.models import RetrievalRequest
 from lob_flow.service import NotFoundError, now
 from lob_flow.workflow import WorkflowValidationError, default_workflow, validate_and_sort
+
+
+class WorkflowCancelledError(Exception):
+    pass
 
 
 class WorkflowService:
@@ -79,7 +85,7 @@ class WorkflowService:
             )
         return WorkflowDraft(app_id=app_id, definition=definition, updated_at=timestamp)
 
-    def stream_run(self, app_id: str, user_input: str | dict, trigger_source: str = "debug", use_published: bool = False, start_node_id: str | None = None) -> Iterator[WorkflowEvent]:
+    def stream_run(self, app_id: str, user_input: str | dict, trigger_source: str = "debug", use_published: bool = False, start_node_id: str | None = None, idempotency_key: str | None = None) -> Iterator[WorkflowEvent]:
         app = self._get_app(app_id)
         version = self.get_latest_version(app_id) if use_published else None
         if use_published and version is None:
@@ -98,8 +104,8 @@ class WorkflowService:
         with self.database.connect() as connection:
             connection.execute(
                 """INSERT INTO workflow_runs
-                   (id, app_id, status, input, inputs_json, definition_snapshot_json, created_at, trigger_source, workflow_version_id)
-                   VALUES (%s, %s, 'running', %s, %s, %s, %s, %s, %s)""",
+                   (id, app_id, status, input, inputs_json, definition_snapshot_json, created_at, trigger_source, workflow_version_id, idempotency_key)
+                   VALUES (%s, %s, 'running', %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     run_id,
                     app_id,
@@ -109,6 +115,7 @@ class WorkflowService:
                     created_at.isoformat(),
                     trigger_source,
                     version.id if version else None,
+                    idempotency_key,
                 ),
             )
         sequence = 1
@@ -117,6 +124,7 @@ class WorkflowService:
         for edge in definition.edges:
             if edge.target in incoming_edges:
                 incoming_edges[edge.target].append(edge)
+        error_sources = {edge.source for edge in definition.edges if edge.source_handle == "error"}
         node_values: dict[str, str] = {}
         active_nodes: set[str] = set()
         branch_results: dict[str, str] = {}
@@ -127,10 +135,11 @@ class WorkflowService:
 
         try:
             for node in ordered:
+                self._raise_if_cancelled(run_id)
                 if node.type == "start" or (start_node_id and node.id == start_node_id):
                     value = input_text
                 else:
-                    active_edges = [edge for edge in incoming_edges[node.id] if edge.source in active_nodes and (edge.source_handle is None or branch_results.get(edge.source) == edge.source_handle)]
+                    active_edges = [edge for edge in incoming_edges[node.id] if edge.source in active_nodes and ((branch_results.get(edge.source) is None and edge.source_handle is None) or branch_results.get(edge.source) == edge.source_handle)]
                     if not active_edges:
                         continue
                     upstream_values = [node_values[edge.source] for edge in active_edges if edge.source in node_values]
@@ -182,7 +191,22 @@ class WorkflowService:
                     )
                     parts: list[str] = []
                     provider = self.model_gateway.get_provider(definition, app["workspace_id"])
-                    for chunk in provider.stream(definition, value):
+                    try:
+                        chunks = self._run_with_retry(
+                            run_id, node.id, lambda: list(provider.stream(definition, value)),
+                            int(node.config.get("retry_count", 0)), float(node.config.get("retry_backoff_seconds", 1)),
+                            float(node.config.get("node_timeout_seconds", node.config.get("timeout_seconds", 30))),
+                        )
+                    except Exception as exc:
+                        if node.id not in error_sources:
+                            raise
+                        error = str(exc)[:2000]
+                        self._mark_node_failed(current_node_run_id, error, int((monotonic() - node_started) * 1000))
+                        node_values[node.id] = error; active_nodes.add(node.id); branch_results[node.id] = "error"
+                        sequence += 1; yield self._event(run_id, sequence, "node_failed", node.id, {"error": error, "routed": True})
+                        current_node_id = None; current_node_run_id = None
+                        continue
+                    for chunk in chunks:
                         if chunk.delta:
                             parts.append(chunk.delta)
                             sequence += 1
@@ -201,14 +225,21 @@ class WorkflowService:
                     if node.config.get("runtime") == "dify":
                         if self.dify_daemon is None:
                             raise PluginExecutionError("Dify Plugin Daemon is unavailable")
-                        value = self.dify_daemon.invoke_installed_tool(
-                            app["workspace_id"],
-                            str(node.config["plugin_id"]),
-                            str(node.config["provider_name"]),
-                            str(node.config["tool_name"]),
-                            parameters,
-                            self.resolve_plugin_credentials(app["workspace_id"], node.config),
-                        )
+                        try:
+                            value = self._run_with_retry(
+                                run_id, node.id, lambda: self.dify_daemon.invoke_installed_tool(
+                                    app["workspace_id"], str(node.config["plugin_id"]), str(node.config["provider_name"]),
+                                    str(node.config["tool_name"]), parameters,
+                                    self.resolve_plugin_credentials(app["workspace_id"], node.config),
+                                ), int(node.config.get("retry_count", 0)), float(node.config.get("retry_backoff_seconds", 1)),
+                                float(node.config.get("node_timeout_seconds", 30)),
+                            )
+                        except Exception as exc:
+                            if node.id not in error_sources: raise
+                            error = str(exc)[:2000]; self._mark_node_failed(current_node_run_id, error, int((monotonic() - node_started) * 1000))
+                            node_values[node.id] = error; active_nodes.add(node.id); branch_results[node.id] = "error"
+                            sequence += 1; yield self._event(run_id, sequence, "node_failed", node.id, {"error": error, "routed": True})
+                            current_node_id = None; current_node_run_id = None; continue
                         node_values[node.id] = value
                         active_nodes.add(node.id)
                         node_duration = int((monotonic() - node_started) * 1000)
@@ -229,12 +260,19 @@ class WorkflowService:
                     invocation_id = str(uuid4())
                     invocation_started = now()
                     invocation_clock = monotonic()
-                    result = self.plugin_service.execute(
-                        app["workspace_id"],
-                        node.config["plugin_id"],
-                        node.config["tool_name"],
-                        parameters,
-                    )
+                    try:
+                        result = self._run_with_retry(
+                            run_id, node.id, lambda: self.plugin_service.execute(
+                                app["workspace_id"], node.config["plugin_id"], node.config["tool_name"], parameters,
+                            ), int(node.config.get("retry_count", 0)), float(node.config.get("retry_backoff_seconds", 1)),
+                            float(node.config.get("node_timeout_seconds", 30)),
+                        )
+                    except Exception as exc:
+                        if node.id not in error_sources: raise
+                        error = str(exc)[:2000]; self._mark_node_failed(current_node_run_id, error, int((monotonic() - node_started) * 1000))
+                        node_values[node.id] = error; active_nodes.add(node.id); branch_results[node.id] = "error"
+                        sequence += 1; yield self._event(run_id, sequence, "node_failed", node.id, {"error": error, "routed": True})
+                        current_node_id = None; current_node_run_id = None; continue
                     value = result.value
                     with self.database.connect() as connection:
                         connection.execute(
@@ -256,14 +294,22 @@ class WorkflowService:
                     if self.knowledge_service is None:
                         raise RuntimeError("Knowledge service is unavailable")
                     query = self._resolve_text(str(node.config.get("query", "{input}")), value, node_values, start_inputs)
-                    response = self.knowledge_service.retrieve(
-                        str(node.config["dataset_id"]),
-                        RetrievalRequest(
-                            query=query,
-                            top_k=int(node.config.get("top_k", 3)),
-                            score_threshold=float(node.config.get("score_threshold", 0)),
-                        ),
-                    )
+                    try:
+                        response = self._run_with_retry(
+                            run_id, node.id, lambda: self.knowledge_service.retrieve(
+                                str(node.config["dataset_id"]), RetrievalRequest(
+                                    query=query, top_k=int(node.config.get("top_k", 3)),
+                                    score_threshold=float(node.config.get("score_threshold", 0)),
+                                ),
+                            ), int(node.config.get("retry_count", 0)), float(node.config.get("retry_backoff_seconds", 1)),
+                            float(node.config.get("node_timeout_seconds", 30)),
+                        )
+                    except Exception as exc:
+                        if node.id not in error_sources: raise
+                        error = str(exc)[:2000]; self._mark_node_failed(current_node_run_id, error, int((monotonic() - node_started) * 1000))
+                        node_values[node.id] = error; active_nodes.add(node.id); branch_results[node.id] = "error"
+                        sequence += 1; yield self._event(run_id, sequence, "node_failed", node.id, {"error": error, "routed": True})
+                        current_node_id = None; current_node_run_id = None; continue
                     context = "\n\n".join(
                         f"[知识片段 {index} | {item.document_name} | score {item.score:.4f}]\n{item.content}"
                         for index, item in enumerate(response.results, 1)
@@ -310,21 +356,35 @@ class WorkflowService:
                 current_node_id = None
                 current_node_run_id = None
 
-            answer_nodes = [node for node in ordered if node.type == "answer"]
+            answer_nodes = [node for node in ordered if node.type == "answer" and node.id in active_nodes]
+            outputs: dict = {}
             if answer_nodes:
                 value = node_values[answer_nodes[-1].id]
+                outputs = self._build_outputs(answer_nodes[-1], value, node_values, start_inputs, branch_results)
             duration = int((monotonic() - run_started) * 1000)
             with self.database.connect() as connection:
                 connection.execute(
                     """UPDATE workflow_runs
-                       SET status = 'succeeded', output = %s, finished_at = %s, duration_ms = %s
+                       SET status = 'succeeded', output = %s, outputs_json = %s, finished_at = %s, duration_ms = %s
                        WHERE id = %s""",
-                    (value, now().isoformat(), duration, run_id),
+                    (value, json.dumps(outputs, ensure_ascii=False), now().isoformat(), duration, run_id),
                 )
             sequence += 1
             yield self._event(
-                run_id, sequence, "workflow_succeeded", None, {"output": value, "duration_ms": duration}
+                run_id, sequence, "workflow_succeeded", None, {"output": value, "outputs": outputs, "duration_ms": duration}
             )
+        except WorkflowCancelledError:
+            duration = int((monotonic() - run_started) * 1000)
+            if current_node_run_id:
+                self._mark_node_failed(current_node_run_id, "工作流已取消", duration)
+            with self.database.connect() as connection:
+                connection.execute(
+                    """UPDATE workflow_runs SET status = 'cancelled', error = NULL, error_code = NULL,
+                       finished_at = COALESCE(finished_at, %s), duration_ms = COALESCE(duration_ms, %s) WHERE id = %s""",
+                    (now().isoformat(), duration, run_id),
+                )
+            sequence += 1
+            yield self._event(run_id, sequence, "workflow_cancelled", None, {"duration_ms": duration})
         except Exception as exc:
             is_database_error = isinstance(exc, psycopg.OperationalError)
             error_code = "database_unavailable" if is_database_error else (
@@ -384,7 +444,29 @@ class WorkflowService:
             values.pop("definition_snapshot_json")
         )
         values["inputs"] = json.loads(values.pop("inputs_json", "{}"))
+        values["outputs"] = json.loads(values.pop("outputs_json", "{}"))
         return WorkflowRun(**values)
+
+    def get_run_by_idempotency(self, app_id: str, key: str) -> WorkflowRun | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM workflow_runs WHERE app_id = %s AND idempotency_key = %s",
+                (app_id, key),
+            ).fetchone()
+        return self.get_run(str(row["id"])) if row else None
+
+    def cancel_run(self, run_id: str) -> WorkflowRun:
+        run = self.get_run(run_id)
+        if run.status != "running":
+            return run
+        timestamp = now()
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE workflow_runs SET status = 'cancelled', finished_at = %s
+                   WHERE id = %s AND status = 'running'""",
+                (timestamp.isoformat(), run_id),
+            )
+        return self.get_run(run_id)
 
     def list_runs(self, app_id: str, limit: int = 100) -> list[WorkflowRun]:
         self._get_app(app_id)
@@ -393,11 +475,19 @@ class WorkflowService:
                 "SELECT * FROM workflow_runs WHERE app_id = %s ORDER BY created_at DESC LIMIT %s",
                 (app_id, max(1, min(limit, 500))),
             ).fetchall()
+            attempt_rows = connection.execute(
+                "SELECT * FROM node_run_attempts WHERE workflow_run_id = %s ORDER BY node_id, attempt",
+                (run_id,),
+            ).fetchall()
+        attempts_by_node: dict[str, list[dict]] = {}
+        for attempt in attempt_rows:
+            attempts_by_node.setdefault(str(attempt["node_id"]), []).append(dict(attempt))
         result: list[WorkflowRun] = []
         for row in rows:
             values = dict(row)
             values["definition_snapshot"] = WorkflowDefinition.model_validate_json(values.pop("definition_snapshot_json"))
             values["inputs"] = json.loads(values.pop("inputs_json", "{}"))
+            values["outputs"] = json.loads(values.pop("outputs_json", "{}"))
             result.append(WorkflowRun(**values))
         return result
 
@@ -546,6 +636,7 @@ class WorkflowService:
             values["input"] = json.loads(values.pop("input_json"))
             output = values.pop("output_json")
             values["output"] = json.loads(output) if output else None
+            values["attempts"] = attempts_by_node.get(str(values["node_id"]), [])
             result.append(NodeRun(**values))
         return result
 
@@ -736,3 +827,109 @@ class WorkflowService:
         if operator == "not_equals":
             return left != right
         return left == right
+
+    def _run_with_retry(self, run_id: str, node_id: str, operation, retries: int, backoff_seconds: float, timeout_seconds: float):
+        last_error: Exception | None = None
+        for attempt in range(1, retries + 2):
+            attempt_id = str(uuid4())
+            started_at = now()
+            clock = monotonic()
+            with self.database.connect() as connection:
+                connection.execute(
+                    """INSERT INTO node_run_attempts (id, workflow_run_id, node_id, attempt, status, started_at)
+                       VALUES (%s, %s, %s, %s, 'running', %s)""",
+                    (attempt_id, run_id, node_id, attempt, started_at.isoformat()),
+                )
+            error: str | None = None
+            result = None
+            try:
+                executor = ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(operation)
+                deadline = monotonic() + timeout_seconds
+                while True:
+                    self._raise_if_cancelled(run_id)
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        raise FutureTimeoutError
+                    try:
+                        result = future.result(timeout=min(0.25, remaining))
+                        break
+                    except FutureTimeoutError:
+                        if monotonic() >= deadline:
+                            raise
+                executor.shutdown(wait=False)
+            except WorkflowCancelledError:
+                future.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
+            except FutureTimeoutError:
+                future.cancel()
+                executor.shutdown(wait=False, cancel_futures=True)
+                error = f"节点执行超时（{timeout_seconds:g} 秒）"
+                last_error = TimeoutError(error)
+            except Exception as exc:
+                executor.shutdown(wait=False, cancel_futures=True)
+                error = str(exc)[:2000]
+                last_error = exc
+            duration = int((monotonic() - clock) * 1000)
+            with self.database.connect() as connection:
+                connection.execute(
+                    """UPDATE node_run_attempts SET status = %s, error = %s, finished_at = %s, duration_ms = %s
+                       WHERE id = %s""",
+                    ("failed" if error else "succeeded", error, now().isoformat(), duration, attempt_id),
+                )
+            if error is None:
+                return result
+            if attempt <= retries:
+                delay = backoff_seconds * (2 ** (attempt - 1))
+                deadline = monotonic() + delay
+                while monotonic() < deadline:
+                    self._raise_if_cancelled(run_id)
+                    sleep(min(0.25, deadline - monotonic()))
+        assert last_error is not None
+        raise last_error
+
+    def _mark_node_failed(self, node_run_id: str | None, error: str, duration_ms: int) -> None:
+        if node_run_id is None:
+            return
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE node_runs SET status = 'failed', error = %s, finished_at = %s, duration_ms = %s
+                   WHERE id = %s""",
+                (error, now().isoformat(), duration_ms, node_run_id),
+            )
+
+    def _raise_if_cancelled(self, run_id: str) -> None:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT status FROM workflow_runs WHERE id = %s", (run_id,)).fetchone()
+        if row and row["status"] == "cancelled":
+            raise WorkflowCancelledError("工作流已取消")
+
+    @staticmethod
+    def _build_outputs(answer_node, value: str, node_values: dict[str, str], start_inputs: dict, branch_results: dict[str, str]) -> dict:
+        definitions = answer_node.config.get("outputs", [])
+        result: dict = {}
+        for output in definitions:
+            expression = str(output.get("value", ""))
+            branch_match = re.fullmatch(r"\{\{([A-Za-z0-9_-]+)\.output\.branch\}\}", expression)
+            resolved: object = branch_results.get(branch_match.group(1), "") if branch_match else WorkflowService._resolve_text(expression, value, node_values, start_inputs)
+            if resolved in (None, "") and output.get("required"):
+                raise WorkflowValidationError([f"结构化输出为空：{output.get('label') or output.get('name')}"])
+            try:
+                if output.get("type") == "number" and resolved not in (None, ""):
+                    resolved = float(resolved) if "." in str(resolved) else int(resolved)
+                elif output.get("type") == "boolean" and resolved not in (None, ""):
+                    if isinstance(resolved, str):
+                        if resolved.lower() not in ("true", "false"):
+                            raise ValueError
+                        resolved = resolved.lower() == "true"
+                    else:
+                        resolved = bool(resolved)
+                elif output.get("type") == "object" and isinstance(resolved, str) and resolved:
+                    resolved = json.loads(resolved)
+                elif output.get("type") == "string" and resolved is not None:
+                    resolved = str(resolved)
+            except (ValueError, TypeError, json.JSONDecodeError) as exc:
+                raise WorkflowValidationError([f"结构化输出类型错误：{output.get('label') or output.get('name')}"]) from exc
+            result[str(output["name"])] = resolved
+        return result

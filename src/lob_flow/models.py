@@ -96,7 +96,7 @@ class RunCreate(BaseModel):
     input: str = Field(min_length=1, max_length=20_000)
 
 
-RunStatus = Literal["running", "succeeded", "failed"]
+RunStatus = Literal["running", "succeeded", "failed", "cancelled"]
 
 
 class Run(BaseModel):
@@ -154,6 +154,18 @@ class WorkflowEdge(BaseModel):
     source: str
     target: str
     source_handle: str | None = Field(default=None, max_length=100)
+
+
+class NodeRunAttempt(BaseModel):
+    id: str
+    workflow_run_id: str
+    node_id: str
+    attempt: int
+    status: Literal["running", "succeeded", "failed"]
+    error: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
 
 
 class WorkflowDefinition(BaseModel):
@@ -244,10 +256,11 @@ class ScheduleTrigger(BaseModel):
 class WorkflowRun(BaseModel):
     id: str
     app_id: str
-    status: Literal["running", "succeeded", "failed"]
+    status: Literal["running", "succeeded", "failed", "cancelled"]
     input: str
     inputs: dict[str, Any] = Field(default_factory=dict)
     output: str | None = None
+    outputs: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
     error_code: str | None = None
     definition_snapshot: WorkflowDefinition
@@ -255,6 +268,7 @@ class WorkflowRun(BaseModel):
     finished_at: datetime | None = None
     duration_ms: int | None = None
     trigger_source: str = "debug"
+    idempotency_key: str | None = None
 
 
 class ServiceApiKey(BaseModel):
@@ -286,6 +300,7 @@ class NodeRun(BaseModel):
     started_at: datetime
     finished_at: datetime | None = None
     duration_ms: int | None = None
+    attempts: list[NodeRunAttempt] = Field(default_factory=list)
 
 
 class WorkflowEvent(BaseModel):
@@ -299,6 +314,7 @@ class WorkflowEvent(BaseModel):
         "node_failed",
         "workflow_succeeded",
         "workflow_failed",
+        "workflow_cancelled",
     ]
     node_id: str | None = None
     data: dict[str, Any]

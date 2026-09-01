@@ -58,6 +58,15 @@ export interface StartInputVariable {
   description?: string;
 }
 
+export interface AnswerOutputVariable {
+  name: string;
+  label: string;
+  type: "string" | "number" | "boolean" | "object";
+  value: string;
+  required: boolean;
+  description?: string;
+}
+
 export interface WorkflowNode {
   id: string;
   type: WorkflowNodeType;
@@ -113,10 +122,11 @@ export interface WorkflowEvent {
 export interface WorkflowRun {
   id: string;
   app_id: string;
-  status: "running" | "succeeded" | "failed";
+  status: "running" | "succeeded" | "failed" | "cancelled";
   input: string;
   inputs: Record<string, unknown>;
   output: string | null;
+  outputs: Record<string, unknown>;
   error: string | null;
   error_code: string | null;
   created_at: string;
@@ -149,13 +159,14 @@ export interface NodeRun {
   workflow_run_id: string;
   node_id: string;
   node_type: WorkflowNodeType;
-  status: "running" | "succeeded" | "failed";
+  status: "running" | "succeeded" | "failed" | "cancelled";
   input: Record<string, unknown>;
   output: Record<string, unknown> | null;
   error: string | null;
   started_at: string;
   finished_at: string | null;
   duration_ms: number | null;
+  attempts: Array<{ id: string; attempt: number; status: "running" | "succeeded" | "failed"; error: string | null; started_at: string; finished_at: string | null; duration_ms: number | null }>;
 }
 
 export interface ServiceApiKey {

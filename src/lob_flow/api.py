@@ -435,16 +435,25 @@ def create_app(database: Database | None = None) -> FastAPI:
         return Response(status_code=204)
 
     @application.post("/v1/workflows/run")
-    def run_workflow_api(request: WorkflowRunCreate, authorization: str = Header(default="")) -> dict:
+    def run_workflow_api(request: WorkflowRunCreate, authorization: str = Header(default=""), idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> dict:
         if not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="请在 Authorization Header 中提供 Bearer API Key")
         try:
             app_id = workflow_service.authenticate_api_key(authorization[7:].strip())
         except NotFoundError as exc:
             raise HTTPException(status_code=401, detail="API Key 无效或已被删除") from exc
-        events = list(workflow_service.stream_run(app_id, request.payload(), "api", use_published=True))
-        run = workflow_service.get_run(events[0].workflow_run_id)
-        return {"workflow_run_id": run.id, "status": run.status, "inputs": run.inputs, "output": run.output, "error": run.error, "duration_ms": run.duration_ms}
+        if idempotency_key and len(idempotency_key) > 200:
+            raise HTTPException(status_code=422, detail="Idempotency-Key 最长 200 个字符")
+        run = workflow_service.get_run_by_idempotency(app_id, idempotency_key) if idempotency_key else None
+        if run is None:
+            try:
+                events = list(workflow_service.stream_run(app_id, request.payload(), "api", use_published=True, idempotency_key=idempotency_key))
+                run = workflow_service.get_run(events[0].workflow_run_id)
+            except psycopg.errors.UniqueViolation:
+                run = workflow_service.get_run_by_idempotency(app_id, idempotency_key or "")
+                if run is None:
+                    raise
+        return {"workflow_run_id": run.id, "status": run.status, "inputs": run.inputs, "output": run.output, "outputs": run.outputs, "error": run.error, "duration_ms": run.duration_ms}
 
     @application.get("/api/workspaces/{workspace_id}/plugin-credentials", response_model=list[PluginCredential])
     def list_plugin_credentials(workspace_id: str, plugin_id: str = "") -> list[PluginCredential]:
@@ -474,6 +483,10 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.post("/api/workflow-runs/{run_id}/retry", response_model=WorkflowRun)
     def retry_workflow_run(run_id: str) -> WorkflowRun:
         return workflow_service.retry_run(run_id)
+
+    @application.post("/api/workflow-runs/{run_id}/cancel", response_model=WorkflowRun)
+    def cancel_workflow_run(run_id: str) -> WorkflowRun:
+        return workflow_service.cancel_run(run_id)
 
     @application.get("/api/workflow-runs/{run_id}/nodes", response_model=list[NodeRun])
     def list_workflow_node_runs(run_id: str) -> list[NodeRun]:

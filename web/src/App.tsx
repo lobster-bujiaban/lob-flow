@@ -299,7 +299,9 @@ function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; prov
   const [input, setInput] = useState("");
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
+  const [outputs, setOutputs] = useState<Record<string, unknown>>({});
   const [running, setRunning] = useState(false);
+  const [activeRunId, setActiveRunId] = useState("");
   const [meta, setMeta] = useState("");
   const [inputVariables, setInputVariables] = useState<StartInputVariable[]>([]);
   const [structuredInputs, setStructuredInputs] = useState<Record<string, unknown>>({});
@@ -323,12 +325,14 @@ function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; prov
     if ((inputVariables.length ? missing : !input.trim()) || running) return;
     const payload = inputVariables.length ? structuredInputs : input.trim();
     const message = inputVariables.length ? JSON.stringify(structuredInputs, null, 2) : input.trim();
-    setQuestion(message); setSubmittedInputs(inputVariables.length ? { ...structuredInputs } : null); if (!inputVariables.length) setInput(""); setAnswer(""); setMeta(""); setRunning(true);
+    setQuestion(message); setSubmittedInputs(inputVariables.length ? { ...structuredInputs } : null); if (!inputVariables.length) setInput(""); setAnswer(""); setOutputs({}); setMeta(""); setRunning(true);
     try {
       if (usesWorkflow) {
         await api.streamWorkflow(app.id, payload, (item) => {
+          if (item.type === "workflow_started") setActiveRunId(String(item.data.run_id ?? ""));
           if (item.type === "workflow_succeeded") {
             setAnswer(String(item.data.output ?? ""));
+            setOutputs(item.data.outputs as Record<string, unknown> ?? {});
             setMeta(`${item.data.duration_ms ?? "--"} ms · 工作流运行完成`);
           }
           if (item.type === "workflow_failed") onError(`${item.data.error_code}: ${item.data.error}`);
@@ -343,7 +347,7 @@ function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; prov
           if (item.type === "run_failed") onError(`${item.data.error_code}: ${item.data.error}`);
         });
       }
-    } catch (reason) { onError(reason); } finally { setRunning(false); }
+    } catch (reason) { onError(reason); } finally { setRunning(false); setActiveRunId(""); }
   }
 
   return <section className="chat-layout">
@@ -353,7 +357,7 @@ function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; prov
         {!canRun && <div className="model-required"><span>AI</span><h3>还没有可用的真实模型</h3><p>配置 OpenAI-compatible API Key，并为当前应用选择模型后即可调试。</p><button className="primary" onClick={onSettings}>前往模型设置</button></div>}
         {canRun && !question && !answer && !running && <div className="conversation-empty"><span>✦</span><h3>测试你的应用</h3><p>{usesWorkflow ? "消息会从开始节点进入，并执行当前工作流中的全部节点。" : "输入一条消息，观察模型输出和运行指标。"}</p></div>}
         {question && <div className="message user-message"><div><div className="bubble">{submittedInputs ? <dl className="submitted-inputs">{Object.entries(submittedInputs).map(([key, value]) => <div key={key}><dt>{inputVariables.find((variable) => variable.name === key)?.label || key}</dt><dd>{typeof value === "boolean" ? value ? "是" : "否" : String(value)}</dd></div>)}</dl> : question}</div></div><div className="avatar user-avatar">你</div></div>}
-        {(answer || running) && <div className="message ai-message"><div className="avatar ai-avatar"><img src={lobsterLogo} alt="LOB AI" /></div><div><div className="bubble">{answer ? <MarkdownResult content={answer} /> : <span className="typing">正在思考</span>}</div>{meta && <div className="message-meta">{meta}</div>}</div></div>}
+        {(answer || running) && <div className="message ai-message"><div className="avatar ai-avatar"><img src={lobsterLogo} alt="LOB AI" /></div><div><div className="bubble">{Object.keys(outputs).length ? <dl className="chat-output-fields">{Object.entries(outputs).map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{typeof value === "object" ? <pre>{JSON.stringify(value, null, 2)}</pre> : String(value)}</dd></div>)}</dl> : answer ? <MarkdownResult content={answer} /> : <span className="typing">正在思考</span>}</div>{meta && <div className="message-meta">{meta}</div>}</div></div>}
       </div>
       <form className={`composer ${inputVariables.length ? "structured-composer" : ""}`} onSubmit={submit}>
         {inputVariables.length ? <div className="chat-structured-inputs"><header><div><strong>运行参数</strong><small>来自开始节点的输入定义</small></div><button type="button" onClick={() => setStructuredInputs({})}>清空</button></header><div>{inputVariables.map((variable) => <label key={variable.name}><span>{variable.label || variable.name}{variable.required ? <b>*</b> : null}</span><small>{variable.description || `${variable.name} · ${variable.type}`}</small>{variable.type === "boolean" ? <select value={String(structuredInputs[variable.name] ?? variable.default ?? "false")} onChange={(event) => setStructuredInputs({ ...structuredInputs, [variable.name]: event.target.value === "true" })}><option value="false">否</option><option value="true">是</option></select> : <input type={variable.type === "number" ? "number" : "text"} value={String(structuredInputs[variable.name] ?? variable.default ?? "")} onChange={(event) => setStructuredInputs({ ...structuredInputs, [variable.name]: event.target.value })} placeholder={`请输入${variable.label || variable.name}`} />}</label>)}</div></div> : <textarea
@@ -368,7 +372,7 @@ function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; prov
           placeholder="输入消息，Enter 发送，Shift + Enter 换行…"
           rows={3}
         />}
-        <button className="send" disabled={!canRun || running || (inputVariables.length ? inputVariables.some((variable) => variable.required && (structuredInputs[variable.name] ?? variable.default ?? "") === "") : !input.trim())}>{running ? "运行中" : inputVariables.length ? "运行工作流" : "发送"}</button>
+        {running && activeRunId ? <button type="button" className="send cancel-send" onClick={() => api.cancelWorkflowRun(activeRunId).catch(onError)}>■ 停止</button> : <button className="send" disabled={!canRun || running || (inputVariables.length ? inputVariables.some((variable) => variable.required && (structuredInputs[variable.name] ?? variable.default ?? "") === "") : !input.trim())}>{running ? "运行中" : inputVariables.length ? "运行工作流" : "发送"}</button>}
       </form>
     </div>
   </section>;

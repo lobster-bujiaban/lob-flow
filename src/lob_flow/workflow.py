@@ -88,6 +88,20 @@ def validate_and_sort(definition: WorkflowDefinition) -> list[WorkflowNode]:
             missing = [case_id for case_id in [*case_ids, "default"] if case_id not in handles]
             if missing:
                 errors.append(f"SWITCH 节点 {node.id} 存在未连线分支：{', '.join(missing)}")
+        if node.type == "answer":
+            outputs = node.config.get("outputs", [])
+            names: set[str] = set()
+            for output in outputs:
+                name = str(output.get("name", ""))
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                    errors.append(f"回答节点输出字段名无效：{name or '空'}")
+                elif name in names:
+                    errors.append(f"回答节点输出字段名重复：{name}")
+                names.add(name)
+                if output.get("type") not in ("string", "number", "boolean", "object"):
+                    errors.append(f"回答节点输出 {name} 类型无效")
+                if not output.get("value"):
+                    errors.append(f"回答节点输出 {name} 缺少变量映射")
     for edge in definition.edges:
         source = node_by_id.get(edge.source)
         if source and source.type == "condition" and edge.source_handle not in ("true", "false"):
@@ -96,8 +110,17 @@ def validate_and_sort(definition: WorkflowDefinition) -> list[WorkflowNode]:
             valid_handles = {str(item.get("id")) for item in source.config.get("cases", [])} | {"default"}
             if edge.source_handle not in valid_handles:
                 errors.append(f"SWITCH 节点 {edge.source} 的分支端口无效")
+        if source and edge.source_handle == "error" and source.type not in ("llm", "tool", "knowledge"):
+            errors.append(f"节点 {edge.source} 不支持 ERROR 分支")
         if source and source.type not in ("condition", "switch") and edge.source_handle is not None:
-            errors.append(f"普通节点 {edge.source} 不能使用分支端口")
+            if edge.source_handle != "error":
+                errors.append(f"普通节点 {edge.source} 不能使用分支端口")
+    output_schemas = [
+        [(str(item.get("name")), str(item.get("type"))) for item in node.config.get("outputs", [])]
+        for node in answers if node.config.get("outputs")
+    ]
+    if output_schemas and any(schema != output_schemas[0] for schema in output_schemas[1:]):
+        errors.append("多个回答节点的结构化输出字段和类型必须一致")
     if errors:
         raise WorkflowValidationError(errors)
 
