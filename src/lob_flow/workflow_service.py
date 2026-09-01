@@ -113,11 +113,13 @@ class WorkflowService:
             )
         sequence = 1
         yield self._event(run_id, sequence, "workflow_started", None, {"input": input_text, "inputs": start_inputs})
-        predecessors: dict[str, list[str]] = {node.id: [] for node in ordered}
+        incoming_edges: dict[str, list] = {node.id: [] for node in ordered}
         for edge in definition.edges:
-            if edge.target in predecessors:
-                predecessors[edge.target].append(edge.source)
+            if edge.target in incoming_edges:
+                incoming_edges[edge.target].append(edge)
         node_values: dict[str, str] = {}
+        active_nodes: set[str] = set()
+        branch_results: dict[str, str] = {}
         value = input_text
         run_started = monotonic()
         current_node_id: str | None = None
@@ -128,7 +130,10 @@ class WorkflowService:
                 if node.type == "start" or (start_node_id and node.id == start_node_id):
                     value = input_text
                 else:
-                    upstream_values = [node_values[node_id] for node_id in predecessors[node.id] if node_id in node_values]
+                    active_edges = [edge for edge in incoming_edges[node.id] if edge.source in active_nodes and (edge.source_handle is None or branch_results.get(edge.source) == edge.source_handle)]
+                    if not active_edges:
+                        continue
+                    upstream_values = [node_values[edge.source] for edge in active_edges if edge.source in node_values]
                     if not upstream_values:
                         upstream_values = [value]
                     value = upstream_values[0] if len(upstream_values) == 1 else "\n".join(upstream_values)
@@ -205,6 +210,7 @@ class WorkflowService:
                             self.resolve_plugin_credentials(app["workspace_id"], node.config),
                         )
                         node_values[node.id] = value
+                        active_nodes.add(node.id)
                         node_duration = int((monotonic() - node_started) * 1000)
                         node_output = {"value": value}
                         with self.database.connect() as connection:
@@ -263,11 +269,23 @@ class WorkflowService:
                         for index, item in enumerate(response.results, 1)
                     )
                     value = f"用户问题：{query}\n\n检索到的知识：\n{context or '未检索到相关知识片段'}"
+                elif node.type == "condition":
+                    left = self._resolve_text(str(node.config.get("left", "")), value, node_values, start_inputs)
+                    right = self._resolve_text(str(node.config.get("right", "")), value, node_values, start_inputs)
+                    matched = self._evaluate_condition(left, str(node.config.get("operator")), right)
+                    branch_results[node.id] = "true" if matched else "false"
+                    value = left
+                elif node.type == "switch":
+                    expression = self._resolve_text(str(node.config.get("expression", "")), value, node_values, start_inputs)
+                    matched_case = next((item for item in node.config.get("cases", []) if str(item.get("value", "")) == expression), None)
+                    branch_results[node.id] = str(matched_case["id"]) if matched_case else "default"
+                    value = expression
 
                 node_values[node.id] = value
+                active_nodes.add(node.id)
 
                 node_duration = int((monotonic() - node_started) * 1000)
-                node_output = {"value": value}
+                node_output = {"value": value, **({"branch": branch_results[node.id]} if node.type in ("condition", "switch") else {})}
                 with self.database.connect() as connection:
                     connection.execute(
                         """UPDATE node_runs
@@ -287,7 +305,7 @@ class WorkflowService:
                     sequence,
                     "node_succeeded",
                     node.id,
-                    {"output": node_output, "duration_ms": node_duration},
+                    {"output": node_output, "duration_ms": node_duration, **({"branch": branch_results[node.id]} if node.type in ("condition", "switch") else {})},
                 )
                 current_node_id = None
                 current_node_run_id = None
@@ -698,3 +716,23 @@ class WorkflowService:
                 return [resolve(child) for child in item]
             return item
         return resolve(parameters)
+
+    @staticmethod
+    def _evaluate_condition(left: str, operator: str, right: str = "") -> bool:
+        if operator == "is_empty":
+            return not left.strip()
+        if operator == "is_not_empty":
+            return bool(left.strip())
+        if operator in ("greater_than", "less_than"):
+            try:
+                left_number, right_number = float(left), float(right)
+            except ValueError:
+                return False
+            return left_number > right_number if operator == "greater_than" else left_number < right_number
+        if operator == "contains":
+            return right in left
+        if operator == "not_contains":
+            return right not in left
+        if operator == "not_equals":
+            return left != right
+        return left == right

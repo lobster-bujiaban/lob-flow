@@ -466,7 +466,7 @@ function SettingsPanel(props: {
   </section>;
 }
 
-const nodeTypeLabel = { start: "START", template: "TEMPLATE", llm: "LLM", knowledge: "KNOWLEDGE", tool: "TOOL", answer: "ANSWER" } as const;
+const nodeTypeLabel = { start: "START", template: "TEMPLATE", llm: "LLM", knowledge: "KNOWLEDGE", tool: "TOOL", condition: "IF/ELSE", switch: "SWITCH", answer: "ANSWER" } as const;
 
 function WorkflowPanel({ app, providers, onError }: { app: FlowApp; providers: ProviderConfig[]; onError: (reason: unknown) => void }) {
   const [definition, setDefinition] = useState<WorkflowDefinition | null>(null);

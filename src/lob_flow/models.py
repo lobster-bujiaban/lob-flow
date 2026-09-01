@@ -139,7 +139,7 @@ class RunEvent(BaseModel):
     created_at: datetime
 
 
-NodeType = Literal["start", "template", "llm", "knowledge", "tool", "answer"]
+NodeType = Literal["start", "template", "llm", "knowledge", "tool", "condition", "switch", "answer"]
 
 
 class WorkflowNode(BaseModel):
@@ -153,6 +153,7 @@ class WorkflowNode(BaseModel):
 class WorkflowEdge(BaseModel):
     source: str
     target: str
+    source_handle: str | None = Field(default=None, max_length=100)
 
 
 class WorkflowDefinition(BaseModel):

@@ -47,7 +47,7 @@ export interface RunEvent {
   data: Record<string, unknown>;
 }
 
-export type WorkflowNodeType = "start" | "template" | "llm" | "knowledge" | "tool" | "answer";
+export type WorkflowNodeType = "start" | "template" | "llm" | "knowledge" | "tool" | "condition" | "switch" | "answer";
 
 export interface StartInputVariable {
   name: string;
@@ -68,7 +68,7 @@ export interface WorkflowNode {
 
 export interface WorkflowDefinition {
   nodes: WorkflowNode[];
-  edges: Array<{ source: string; target: string }>;
+  edges: Array<{ source: string; target: string; source_handle?: string | null }>;
 }
 
 export interface WorkflowDraft {

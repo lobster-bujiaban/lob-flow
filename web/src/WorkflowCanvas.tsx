@@ -25,7 +25,7 @@ type CanvasData = {
   workflow: WorkflowNode;
   status?: string;
   output?: string;
-  openNodeLibrary?: (sourceId: string) => void;
+  openNodeLibrary?: (sourceId: string, sourceHandle?: string) => void;
 };
 type CanvasNode = Node<CanvasData, "workflow">;
 
@@ -35,17 +35,21 @@ const labels: Record<WorkflowNodeType, string> = {
   llm: "LLM",
   knowledge: "知识检索",
   tool: "工具",
+  condition: "条件分支",
+  switch: "多路分支",
   answer: "回答"
 };
 
 function CanvasNodeCard({ data, selected }: NodeProps<CanvasNode>) {
   const { workflow, status, output } = data;
-  return <div className={`canvas-node node-${workflow.type} ${status ?? ""} ${selected ? "selected" : ""}`}>
+  const switchCases = workflow.type === "switch" ? (workflow.config.cases as Array<{ id: string; label: string; value: string }> | undefined) ?? [] : [];
+  const switchHandles = workflow.type === "switch" ? [...switchCases.map((item) => ({ id: item.id, label: item.label || item.value })), { id: "default", label: "DEFAULT" }] : [];
+  return <div className={`canvas-node node-${workflow.type} ${status ?? ""} ${selected ? "selected" : ""}`} style={workflow.type === "switch" ? { minHeight: Math.max(110, 64 + switchHandles.length * 26) } : undefined}>
     {workflow.type !== "start" && <Handle type="target" position={Position.Left} />}
     <div className="canvas-node-title"><span>{workflow.type.toUpperCase()}</span><strong>{workflow.name}</strong></div>
     <p>{status === "running" ? "运行中…" : status === "succeeded" ? "运行完成" : labels[workflow.type]}</p>
     {output && <div className="canvas-node-preview">{output}</div>}
-    {workflow.type !== "answer" && <Handle type="source" position={Position.Right} onClick={(event) => { event.stopPropagation(); data.openNodeLibrary?.(workflow.id); }} title="点击添加下游节点，或拖拽连线" />}
+    {workflow.type === "condition" ? <><span className="condition-handle-label true">TRUE</span><Handle id="true" className="condition-handle true" type="source" position={Position.Right} style={{ top: "35%" }} onClick={(event) => { event.stopPropagation(); data.openNodeLibrary?.(workflow.id, "true"); }} /><span className="condition-handle-label false">FALSE</span><Handle id="false" className="condition-handle false" type="source" position={Position.Right} style={{ top: "72%" }} onClick={(event) => { event.stopPropagation(); data.openNodeLibrary?.(workflow.id, "false"); }} /></> : workflow.type === "switch" ? <>{switchHandles.map((item, index) => { const top = 70 + index * 26; return <span key={item.id}><span className={`switch-handle-label ${item.id === "default" ? "default" : ""}`} style={{ top }}>{item.label}</span><Handle id={item.id} className={`switch-handle ${item.id === "default" ? "default" : ""}`} type="source" position={Position.Right} style={{ top }} onClick={(event) => { event.stopPropagation(); data.openNodeLibrary?.(workflow.id, item.id); }} /></span>; })}</> : workflow.type !== "answer" && <Handle type="source" position={Position.Right} onClick={(event) => { event.stopPropagation(); data.openNodeLibrary?.(workflow.id); }} title="点击添加下游节点，或拖拽连线" />}
   </div>;
 }
 
@@ -69,6 +73,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
   const [difyTools, setDifyTools] = useState<DifyToolProvider[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteSourceId, setPaletteSourceId] = useState<string | null>(null);
+  const [paletteSourceHandle, setPaletteSourceHandle] = useState<string | null>(null);
   const [panelMode, setPanelMode] = useState<"node" | "run" | null>(null);
   const [lastSaved, setLastSaved] = useState("");
   const [versions, setVersions] = useState<WorkflowVersion[]>([]);
@@ -97,6 +102,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
       id: `edge-${index}-${edge.source}-${edge.target}`,
       source: edge.source,
       target: edge.target,
+      sourceHandle: edge.source_handle ?? undefined,
       markerEnd: { type: MarkerType.ArrowClosed },
       animated: false
     })));
@@ -122,7 +128,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
   }, [nodes, edges, selectedId]);
   const definition = useCallback((): WorkflowDefinition => ({
     nodes: nodes.map((node) => ({ ...node.data.workflow, position: node.position })),
-    edges: edges.map((edge) => ({ source: edge.source, target: edge.target }))
+    edges: edges.map((edge) => ({ source: edge.source, target: edge.target, source_handle: edge.sourceHandle ?? null }))
   }), [nodes, edges]);
 
   const connect = useCallback((connection: Connection) => setEdges((current) => addEdge({
@@ -130,8 +136,9 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
     markerEnd: { type: MarkerType.ArrowClosed }
   }, current)), [setEdges]);
 
-  function openLibraryFromNode(sourceId: string) {
+  function openLibraryFromNode(sourceId: string, sourceHandle?: string) {
     setPaletteSourceId(sourceId);
+    setPaletteSourceHandle(sourceHandle ?? null);
     setPaletteOpen(true);
     setPanelMode(null);
     setSelectedId(null);
@@ -148,6 +155,10 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
           ? (() => { if (selectedDify) { const tool = selectedDify.tools.find((item) => item.name === selectedToolName) ?? selectedDify.tools[0]; return { runtime: "dify", plugin_id: selectedDify.plugin_id, provider_name: selectedDify.provider_name, tool_name: tool?.name ?? "", credential_schema: selectedDify.credential_schema ?? {}, credentials: {}, parameters: Object.fromEntries(Object.keys(tool?.parameters ?? {}).map((key) => [key, key === "text" || key === "body" ? "{input}" : ""])) }; } const plugin = selectedPlugin ?? plugins.find((item) => item.installed && item.enabled); const tool = plugin?.manifest.tools.find((item) => item.name === selectedToolName) ?? plugin?.manifest.tools[0]; return { runtime: "builtin", plugin_id: plugin?.manifest.plugin_id ?? "", tool_name: tool?.name ?? "", parameters: Object.fromEntries(Object.keys(tool?.parameters ?? {}).map((key) => [key, key === "text" || key === "json" ? "{input}" : ""])) }; })()
         : type === "knowledge"
           ? { dataset_id: selectedDataset?.id ?? datasets[0]?.id ?? "", query: "{input}", top_k: 3, score_threshold: 0 }
+          : type === "condition"
+            ? { left: "{{start.input}}", operator: "equals", right: "" }
+          : type === "switch"
+            ? { expression: "{{start.input}}", cases: [{ id: `case_${crypto.randomUUID().slice(0, 6)}`, label: "Case 1", value: "" }] }
           : type === "start"
             ? { variables: [{ name: "input", label: "用户输入", type: "string", required: true, default: "", description: "工作流的主要输入" }] }
             : {};
@@ -161,11 +172,12 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
       deletable: type !== "start"
     };
     setNodes((current) => [...current, node]);
-    if (paletteSourceId) setEdges((current) => addEdge({ id: `edge-${paletteSourceId}-${id}`, source: paletteSourceId, target: id, markerEnd: { type: MarkerType.ArrowClosed } }, current));
+    if (paletteSourceId) setEdges((current) => addEdge({ id: `edge-${paletteSourceId}-${paletteSourceHandle ?? "default"}-${id}`, source: paletteSourceId, sourceHandle: paletteSourceHandle, target: id, markerEnd: { type: MarkerType.ArrowClosed } }, current));
     setSelectedId(id);
     setPanelMode("node");
     setPaletteOpen(false);
     setPaletteSourceId(null);
+    setPaletteSourceHandle(null);
   }
 
   function deleteSelected() {
@@ -177,6 +189,10 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
 
   function updateSelected(patch: Partial<WorkflowNode>, configPatch?: Record<string, unknown>) {
     if (!selectedId) return;
+    if (configPatch?.cases) {
+      const validHandles = new Set([...(configPatch.cases as Array<{ id: string }>).map((item) => item.id), "default"]);
+      setEdges((current) => current.filter((edge) => edge.source !== selectedId || !edge.sourceHandle || validHandles.has(edge.sourceHandle)));
+    }
     setNodes((current) => current.map((node) => node.id === selectedId ? {
       ...node,
       data: {
@@ -270,7 +286,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
           onEdgesChange={onEdgesChange}
           onConnect={connect}
           onNodeClick={(_, node) => { setSelectedId(node.id); setPanelMode("node"); }}
-          onPaneClick={() => { setSelectedId(null); setPanelMode(null); setPaletteOpen(false); setPaletteSourceId(null); }}
+          onPaneClick={() => { setSelectedId(null); setPanelMode(null); setPaletteOpen(false); setPaletteSourceId(null); setPaletteSourceHandle(null); }}
           deleteKeyCode={["Backspace", "Delete"]}
           proOptions={{ hideAttribution: true }}
           fitView
@@ -281,14 +297,14 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
           <MiniMap nodeColor={(node) => (node.data as CanvasData).workflow.type === "llm" ? "#ed5a2a" : (node.data as CanvasData).workflow.type === "answer" ? "#24855b" : "#17335e"} />
           <Controls />
         </ReactFlow>
-        <div className="flow-palette"><button className={paletteOpen && !paletteSourceId ? "active" : ""} onClick={() => { setPaletteSourceId(null); setPaletteOpen((open) => !open); }} title="添加节点">＋</button><button onClick={() => setPanelMode("run")} title="测试运行">▷</button></div>
+        <div className="flow-palette"><button className={paletteOpen && !paletteSourceId ? "active" : ""} onClick={() => { setPaletteSourceId(null); setPaletteSourceHandle(null); setPaletteOpen((open) => !open); }} title="添加节点">＋</button><button onClick={() => setPanelMode("run")} title="测试运行">▷</button></div>
         {paletteOpen && <UnifiedNodeLibrary plugins={plugins} difyTools={difyTools} datasets={datasets} addNode={addNode} scheduleCount={scheduleTriggers.length} openSchedules={() => { setPaletteOpen(false); setScheduleOpen(true); }} selectStart={() => {
           const start = nodes.find((node) => node.data.workflow.type === "start");
           if (!start) { addNode("start"); return; }
           setSelectedId(start.id);
           setPanelMode("node");
           setPaletteOpen(false);
-        }} close={() => { setPaletteOpen(false); setPaletteSourceId(null); }} />}
+        }} close={() => { setPaletteOpen(false); setPaletteSourceId(null); setPaletteSourceHandle(null); }} />}
       </div>
       {panelMode && <aside className="flow-inspector"><button className="inspector-close" onClick={() => { setPanelMode(null); setSelectedId(null); }}>×</button>{panelMode === "node" && selected ? <NodeInspector node={selected.data.workflow} variables={availableVariables} providers={providers} plugins={plugins} difyTools={difyTools} datasets={datasets} update={updateSelected} remove={deleteSelected} runNode={() => runSelectedNode(selected.id)} running={running} /> : <RunInspector variables={startVariables} values={runInputs} setValues={setRunInputs} input={input} setInput={setInput} run={run} running={running} answer={answer} />}</aside>}
     </div>
@@ -307,6 +323,8 @@ function UnifiedNodeLibrary({ plugins, difyTools, datasets, addNode, selectStart
     { type: "llm", icon: "AI", label: "LLM", description: "调用大语言模型处理自然语言", group: "基础" },
     { type: "knowledge", icon: "⌕", label: "知识检索", description: "从知识库召回相关片段", group: "基础" },
     { type: "answer", icon: "✓", label: "回答", description: "输出工作流最终结果", group: "基础" },
+    { type: "condition", icon: "IF", label: "条件分支", description: "根据变量判断执行 TRUE 或 FALSE 路径", group: "转换" },
+    { type: "switch", icon: "SW", label: "多路分支", description: "根据一个变量匹配多个 Case 和默认路径", group: "转换" },
     { type: "template", icon: "T", label: "模板转换", description: "组合和转换上游变量", group: "转换" },
   ] satisfies Array<{ type: Exclude<WorkflowNodeType, "start">; icon: string; label: string; description: string; group: string }>).filter((item) => !needle || `${item.label}${item.description}`.toLowerCase().includes(needle));
   const triggers = [
@@ -420,6 +438,13 @@ function StartVariablesEditor({ variables, onChange }: { variables: StartInputVa
   return <div className="start-variables"><div className="start-variables-head"><div><strong>接口输入参数</strong><small>调用 API 时通过 inputs 对象传入</small></div><button onClick={() => onChange([...variables, { name: `field_${variables.length + 1}`, label: "新参数", type: "string", required: false, default: "" }])}>＋ 添加参数</button></div>{variables.map((variable, index) => <article key={index}><div><label>参数名</label><input value={variable.name} onChange={(event) => update(index, { name: event.target.value.replace(/[^A-Za-z0-9_]/g, "") })} placeholder="topic" /></div><div><label>显示名称</label><input value={variable.label} onChange={(event) => update(index, { label: event.target.value })} placeholder="主题" /></div><div><label>类型</label><select value={variable.type} onChange={(event) => update(index, { type: event.target.value as StartInputVariable["type"] })}><option value="string">文本</option><option value="number">数字</option><option value="boolean">布尔值</option></select></div><label className="start-required"><input type="checkbox" checked={variable.required} onChange={(event) => update(index, { required: event.target.checked })} />必填</label><button className="row-delete" onClick={() => onChange(variables.filter((_, itemIndex) => itemIndex !== index))}>×</button><div className="start-variable-wide"><label>默认值</label><input value={String(variable.default ?? "")} onChange={(event) => update(index, { default: event.target.value })} placeholder="可选" /></div><div className="start-variable-wide"><label>说明</label><input value={variable.description ?? ""} onChange={(event) => update(index, { description: event.target.value })} placeholder="向接口调用者说明该参数" /></div></article>)}{!variables.length && <p>尚未定义输入参数。添加后，API 和调试面板会自动生成对应字段。</p>}</div>;
 }
 
+type SwitchCase = { id: string; label: string; value: string };
+
+function SwitchCasesEditor({ cases, onChange }: { cases: SwitchCase[]; onChange: (cases: SwitchCase[]) => void }) {
+  function update(index: number, patch: Partial<SwitchCase>) { onChange(cases.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item)); }
+  return <div className="switch-cases"><div className="switch-cases-head"><strong>Case 分支</strong><button onClick={() => onChange([...cases, { id: `case_${crypto.randomUUID().slice(0, 6)}`, label: `Case ${cases.length + 1}`, value: "" }])}>＋ 添加 Case</button></div>{cases.map((item, index) => <article key={item.id}><span>{index + 1}</span><div><label>分支名称</label><input value={item.label} onChange={(event) => update(index, { label: event.target.value })} placeholder={`Case ${index + 1}`} /></div><div><label>匹配值</label><input value={item.value} onChange={(event) => update(index, { value: event.target.value })} placeholder="例如 article" /></div><button className="row-delete" onClick={() => onChange(cases.filter((_, itemIndex) => itemIndex !== index))}>×</button></article>)}<div className="switch-default"><i>DEFAULT</i><span>没有 Case 命中时执行</span></div></div>;
+}
+
 function NodeInspector({ node, variables, providers, plugins, difyTools, datasets, update, remove, runNode, running }: { node: WorkflowNode; variables: WorkflowNode[]; providers: ProviderConfig[]; plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; datasets: Dataset[]; update: (patch: Partial<WorkflowNode>, config?: Record<string, unknown>) => void; remove: () => void; runNode: () => void; running: boolean }) {
   const installed = plugins.filter((item) => item.installed && item.enabled);
   const activePlugin = installed.find((item) => item.manifest.plugin_id === node.config.plugin_id);
@@ -434,6 +459,8 @@ function NodeInspector({ node, variables, providers, plugins, difyTools, dataset
     {node.type === "template" && <><label>Prompt 模板</label><textarea rows={6} value={String(node.config.template ?? "")} onChange={(event) => update({}, { template: event.target.value })} /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { template: `${String(node.config.template ?? "")}${variable}` })} /><p className="inspector-hint">可插入开始输入或任意已执行节点的输出。</p></>}
     {node.type === "llm" && <><label>模型配置</label><select value={String(node.config.provider_config_id ?? "")} onChange={(event) => update({}, { provider_config_id: event.target.value })}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><label>模型</label><input value={String(node.config.model ?? "gpt-5.4")} onChange={(event) => update({}, { model: event.target.value })} /><label>System Prompt</label><textarea rows={6} value={String(node.config.system_prompt ?? "")} onChange={(event) => update({}, { system_prompt: event.target.value })} /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { system_prompt: `${String(node.config.system_prompt ?? "")}${variable}` })} /><div className="inspector-grid"><div><label>温度</label><input type="number" step="0.1" min="0" max="2" value={Number(node.config.temperature ?? 0.2)} onChange={(event) => update({}, { temperature: Number(event.target.value) })} /></div><div><label>最大 Token</label><input type="number" min="1" value={Number(node.config.max_tokens ?? 512)} onChange={(event) => update({}, { max_tokens: Number(event.target.value) })} /></div></div></>}
     {node.type === "knowledge" && <><label>知识库</label><select value={String(node.config.dataset_id ?? "")} onChange={(event) => update({}, { dataset_id: event.target.value })}><option value="">请选择知识库</option>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.icon} {dataset.name}</option>)}</select><label>检索 Query</label><textarea rows={4} value={String(node.config.query ?? "{input}")} onChange={(event) => update({}, { query: event.target.value })} /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { query: `${String(node.config.query ?? "")}${variable}` })} /><p className="inspector-hint">选择开始输入或上游节点输出作为检索内容。</p><div className="inspector-grid"><div><label>Top K</label><input type="number" min="1" max="20" value={Number(node.config.top_k ?? 3)} onChange={(event) => update({}, { top_k: Number(event.target.value) })} /></div><div><label>分数阈值</label><input type="number" min="0" max="1" step="0.05" value={Number(node.config.score_threshold ?? 0)} onChange={(event) => update({}, { score_threshold: Number(event.target.value) })} /></div></div>{!datasets.length && <p className="inspector-hint">请先在知识库页面创建知识库并添加文档。</p>}</>}
+    {node.type === "condition" && <div className="condition-config"><label>判断变量</label><input value={String(node.config.left ?? "")} onChange={(event) => update({}, { left: event.target.value })} placeholder="选择或输入变量" /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { left: variable })} /><label>判断方式</label><select value={String(node.config.operator ?? "equals")} onChange={(event) => update({}, { operator: event.target.value })}><option value="equals">等于</option><option value="not_equals">不等于</option><option value="contains">包含</option><option value="not_contains">不包含</option><option value="greater_than">大于</option><option value="less_than">小于</option><option value="is_empty">为空</option><option value="is_not_empty">不为空</option></select>{!["is_empty", "is_not_empty"].includes(String(node.config.operator)) && <><label>比较值</label><input value={String(node.config.right ?? "")} onChange={(event) => update({}, { right: event.target.value })} placeholder="输入固定值或变量" /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { right: variable })} /></>}<div className="condition-branches"><span><i>TRUE</i>条件成立时执行</span><span><i>FALSE</i>条件不成立时执行</span></div></div>}
+    {node.type === "switch" && <div className="condition-config"><label>判断变量</label><input value={String(node.config.expression ?? "")} onChange={(event) => update({}, { expression: event.target.value })} placeholder="选择枚举型变量" /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { expression: variable })} /><p className="inspector-hint">按顺序精确匹配 Case 值；没有命中时进入 DEFAULT。</p><SwitchCasesEditor cases={(node.config.cases as SwitchCase[] | undefined) ?? []} onChange={(cases) => update({}, { cases })} /></div>}
     {node.type === "tool" && node.config.runtime !== "dify" && <><label>已安装插件</label><select value={String(node.config.plugin_id ?? "")} onChange={(event) => { const plugin = installed.find((item) => item.manifest.plugin_id === event.target.value); const tool = plugin?.manifest.tools[0]; update({}, { plugin_id: event.target.value, tool_name: tool?.name ?? "", parameters: Object.fromEntries(Object.keys(tool?.parameters ?? {}).map((key) => [key, key === "text" || key === "json" ? "{input}" : ""])) }); }}><option value="">请选择插件</option>{installed.map((item) => <option key={item.manifest.plugin_id} value={item.manifest.plugin_id}>{item.manifest.name}</option>)}</select><label>工具</label><select value={String(node.config.tool_name ?? "")} onChange={(event) => { const tool = activePlugin?.manifest.tools.find((item) => item.name === event.target.value); update({}, { tool_name: event.target.value, parameters: Object.fromEntries(Object.keys(tool?.parameters ?? {}).map((key) => [key, key === "text" || key === "json" ? "{input}" : ""])) }); }}>{activePlugin?.manifest.tools.map((tool) => <option key={tool.name} value={tool.name}>{tool.label}</option>)}</select>{activeTool && Object.entries(activeTool.parameters).map(([key, schema]) => <div key={key}><label>{key}{schema.required ? " *" : ""}</label><input value={String((node.config.parameters as Record<string, unknown> | undefined)?.[key] ?? "")} onChange={(event) => update({}, { parameters: { ...(node.config.parameters as Record<string, unknown> ?? {}), [key]: event.target.value } })} placeholder={key === "text" || key === "json" ? "{input}" : ""} /></div>)}{!installed.length && <p className="inspector-hint">请先到插件市场安装并启用 Tool 插件。</p>}</>}
     {node.type === "tool" && node.config.runtime === "dify" && <div className="dify-node-config"><p className="inspector-hint">Daemon 插件：<code>{String(node.config.plugin_id)}</code> / <code>{String(node.config.tool_name)}</code></p>{Object.keys(difyCredentialSchema).length > 0 && <div className="dify-credentials"><strong>插件授权</strong><small>凭据用于调用插件，不会显示在运行日志中。</small>{Object.entries(difyCredentialSchema).map(([key, schema]) => <div key={key}><label>{schema.label || key}{schema.required ? " *" : ""}</label><input type={schema.type?.includes("secret") ? "password" : "text"} value={String((node.config.credentials as Record<string, unknown> ?? {})[key] ?? "")} onChange={(event) => update({}, { credential_schema: difyCredentialSchema, credentials: { ...(node.config.credentials as Record<string, unknown> ?? {}), [key]: event.target.value } })} placeholder={`请输入 ${schema.label || key}`} /></div>)}</div>}{Object.entries(node.config.parameters as Record<string, unknown> ?? {}).map(([key, value]) => <div key={key}><label>{key}</label><input value={String(value ?? "")} onChange={(event) => update({}, { parameters: { ...(node.config.parameters as Record<string, unknown> ?? {}), [key]: event.target.value } })} placeholder="可使用 {input}" /></div>)}</div>}
     {node.type === "tool" && <ToolVariablePicker parameters={node.config.parameters as Record<string, unknown> ?? {}} nodes={variables} currentId={node.id} onChange={(parameters) => update({}, { parameters })} />}

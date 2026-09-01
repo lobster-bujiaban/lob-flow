@@ -64,6 +64,40 @@ def validate_and_sort(definition: WorkflowDefinition) -> list[WorkflowNode]:
                 errors.append(f"Dify Tool 节点 {node.id} 缺少 provider_name")
         if node.type == "knowledge" and not node.config.get("dataset_id"):
             errors.append(f"Knowledge 节点 {node.id} 缺少 dataset_id")
+        if node.type == "condition":
+            if not node.config.get("left"):
+                errors.append(f"条件节点 {node.id} 缺少判断变量")
+            if node.config.get("operator") not in ("equals", "not_equals", "contains", "not_contains", "greater_than", "less_than", "is_empty", "is_not_empty"):
+                errors.append(f"条件节点 {node.id} 运算符无效")
+            handles = {edge.source_handle for edge in definition.edges if edge.source == node.id}
+            if not {"true", "false"}.issubset(handles):
+                errors.append(f"条件节点 {node.id} 必须连接 TRUE 和 FALSE 两个分支")
+        if node.type == "switch":
+            if not node.config.get("expression"):
+                errors.append(f"SWITCH 节点 {node.id} 缺少判断变量")
+            cases = node.config.get("cases", [])
+            case_ids = [str(item.get("id", "")) for item in cases]
+            case_values = [str(item.get("value", "")) for item in cases]
+            if not cases:
+                errors.append(f"SWITCH 节点 {node.id} 至少需要一个 Case")
+            if any(not re.fullmatch(r"case_[A-Za-z0-9_-]+", case_id) for case_id in case_ids):
+                errors.append(f"SWITCH 节点 {node.id} 存在无效 Case ID")
+            if len(set(case_ids)) != len(case_ids) or len(set(case_values)) != len(case_values):
+                errors.append(f"SWITCH 节点 {node.id} 的 Case ID 和匹配值必须唯一")
+            handles = {edge.source_handle for edge in definition.edges if edge.source == node.id}
+            missing = [case_id for case_id in [*case_ids, "default"] if case_id not in handles]
+            if missing:
+                errors.append(f"SWITCH 节点 {node.id} 存在未连线分支：{', '.join(missing)}")
+    for edge in definition.edges:
+        source = node_by_id.get(edge.source)
+        if source and source.type == "condition" and edge.source_handle not in ("true", "false"):
+            errors.append(f"条件节点 {edge.source} 的连线缺少分支端口")
+        if source and source.type == "switch":
+            valid_handles = {str(item.get("id")) for item in source.config.get("cases", [])} | {"default"}
+            if edge.source_handle not in valid_handles:
+                errors.append(f"SWITCH 节点 {edge.source} 的分支端口无效")
+        if source and source.type not in ("condition", "switch") and edge.source_handle is not None:
+            errors.append(f"普通节点 {edge.source} 不能使用分支端口")
     if errors:
         raise WorkflowValidationError(errors)
 
