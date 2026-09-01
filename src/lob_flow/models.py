@@ -182,6 +182,24 @@ class WorkflowRun(BaseModel):
     created_at: datetime
     finished_at: datetime | None = None
     duration_ms: int | None = None
+    trigger_source: str = "debug"
+
+
+class ServiceApiKey(BaseModel):
+    id: str
+    app_id: str
+    name: str
+    key_prefix: str
+    created_at: datetime
+    last_used_at: datetime | None = None
+
+
+class ServiceApiKeyCreated(ServiceApiKey):
+    api_key: str
+
+
+class ServiceApiKeyCreate(BaseModel):
+    name: str = Field(default="默认密钥", min_length=1, max_length=100)
 
 
 class NodeRun(BaseModel):

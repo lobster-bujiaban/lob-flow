@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import psycopg
+import hashlib
+import secrets
 from collections.abc import Iterator
 from time import monotonic
 from uuid import uuid4
@@ -16,6 +18,8 @@ from lob_flow.models import (
     WorkflowDraft,
     WorkflowEvent,
     WorkflowRun,
+    ServiceApiKey,
+    ServiceApiKeyCreated,
 )
 from lob_flow.provider import ModelGateway, ProviderError
 from lob_flow.plugin_service import PluginExecutionError, PluginService
@@ -74,7 +78,7 @@ class WorkflowService:
             )
         return WorkflowDraft(app_id=app_id, definition=definition, updated_at=timestamp)
 
-    def stream_run(self, app_id: str, user_input: str) -> Iterator[WorkflowEvent]:
+    def stream_run(self, app_id: str, user_input: str, trigger_source: str = "debug") -> Iterator[WorkflowEvent]:
         app = self._get_app(app_id)
         draft = self.get_draft(app_id)
         ordered = validate_and_sort(draft.definition)
@@ -83,14 +87,15 @@ class WorkflowService:
         with self.database.connect() as connection:
             connection.execute(
                 """INSERT INTO workflow_runs
-                   (id, app_id, status, input, definition_snapshot_json, created_at)
-                   VALUES (%s, %s, 'running', %s, %s, %s)""",
+                   (id, app_id, status, input, definition_snapshot_json, created_at, trigger_source)
+                   VALUES (%s, %s, 'running', %s, %s, %s, %s)""",
                 (
                     run_id,
                     app_id,
                     user_input,
                     draft.definition.model_dump_json(),
                     created_at.isoformat(),
+                    trigger_source,
                 ),
             )
         sequence = 1
@@ -181,6 +186,7 @@ class WorkflowService:
                             str(node.config["provider_name"]),
                             str(node.config["tool_name"]),
                             parameters,
+                            dict(node.config.get("credentials") or {}),
                         )
                         node_values[node.id] = value
                         node_duration = int((monotonic() - node_started) * 1000)
@@ -342,6 +348,53 @@ class WorkflowService:
             values.pop("definition_snapshot_json")
         )
         return WorkflowRun(**values)
+
+    def list_runs(self, app_id: str, limit: int = 100) -> list[WorkflowRun]:
+        self._get_app(app_id)
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM workflow_runs WHERE app_id = %s ORDER BY created_at DESC LIMIT %s",
+                (app_id, max(1, min(limit, 500))),
+            ).fetchall()
+        result: list[WorkflowRun] = []
+        for row in rows:
+            values = dict(row)
+            values["definition_snapshot"] = WorkflowDefinition.model_validate_json(values.pop("definition_snapshot_json"))
+            result.append(WorkflowRun(**values))
+        return result
+
+    def create_api_key(self, app_id: str, name: str) -> ServiceApiKeyCreated:
+        self._get_app(app_id)
+        token = f"lob-{secrets.token_urlsafe(32)}"
+        item = ServiceApiKeyCreated(id=str(uuid4()), app_id=app_id, name=name, key_prefix=token[:12], api_key=token, created_at=now())
+        with self.database.connect() as connection:
+            connection.execute(
+                "INSERT INTO service_api_keys (id, app_id, name, key_prefix, key_hash, created_at) VALUES (%s, %s, %s, %s, %s, %s)",
+                (item.id, app_id, name, item.key_prefix, hashlib.sha256(token.encode()).hexdigest(), item.created_at.isoformat()),
+            )
+        return item
+
+    def list_api_keys(self, app_id: str) -> list[ServiceApiKey]:
+        self._get_app(app_id)
+        with self.database.connect() as connection:
+            rows = connection.execute("SELECT id, app_id, name, key_prefix, created_at, last_used_at FROM service_api_keys WHERE app_id = %s ORDER BY created_at DESC", (app_id,)).fetchall()
+        return [ServiceApiKey(**dict(row)) for row in rows]
+
+    def delete_api_key(self, app_id: str, key_id: str) -> None:
+        with self.database.connect() as connection:
+            result = connection.execute("DELETE FROM service_api_keys WHERE id = %s AND app_id = %s", (key_id, app_id))
+            if result.rowcount == 0:
+                raise NotFoundError("API Key not found")
+
+    def authenticate_api_key(self, token: str) -> str:
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT id, app_id FROM service_api_keys WHERE key_hash = %s", (digest,)).fetchone()
+            if row:
+                connection.execute("UPDATE service_api_keys SET last_used_at = %s WHERE id = %s", (now().isoformat(), row["id"]))
+        if row is None:
+            raise NotFoundError("Invalid API Key")
+        return str(row["app_id"])
 
     def list_node_runs(self, run_id: str) -> list[NodeRun]:
         self.get_run(run_id)

@@ -1,13 +1,13 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import type { App as FlowApp, AppType, DraftDefinition, ProviderConfig, WorkflowDefinition, WorkflowEvent, WorkflowNode, Workspace } from "./types";
+import type { App as FlowApp, AppType, DraftDefinition, ProviderConfig, ServiceApiKey, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowRun, Workspace } from "./types";
 import lobsterLogo from "./assets/lobster-logo.png";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { PluginMarketplace } from "./PluginMarketplace";
 import { KnowledgeBase } from "./KnowledgeBase";
 import { ToolsLibrary } from "./ToolsLibrary";
 
-type Tab = "studio" | "chat" | "workflow" | "knowledge" | "tools" | "plugins" | "settings";
+type Tab = "studio" | "chat" | "workflow" | "api" | "logs" | "knowledge" | "tools" | "plugins" | "settings";
 type AppFilter = "all" | AppType;
 
 const appTypes: Array<{ id: AppType; label: string; icon: string; description: string }> = [
@@ -164,12 +164,16 @@ export function App() {
         <div className="global-actions"><button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>◈ 插件</button><button className="user-avatar-top">LOB</button></div>
       </header>
       <main className="main">
-        {activeApp && ["chat", "workflow", "settings"].includes(tab) && <header className="app-header"><button className="app-back" onClick={() => setTab("studio")}>←</button><div className="app-header-title"><span>{appTypes.find((type) => type.id === activeApp.app_type)?.icon}</span><div><strong>{activeApp.name}</strong><small>{appTypes.find((type) => type.id === activeApp.app_type)?.label}</small></div></div><nav><button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button><button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button><button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button></nav></header>}
+        {activeApp && ["chat", "workflow", "api", "logs", "settings"].includes(tab) && <header className="app-header"><button className="app-back" onClick={() => setTab("studio")}>←</button><div className="app-header-title"><span>{appTypes.find((type) => type.id === activeApp.app_type)?.icon}</span><div><strong>{activeApp.name}</strong><small>{appTypes.find((type) => type.id === activeApp.app_type)?.label}</small></div></div><nav><button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button><button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button><button className={tab === "api" ? "active" : ""} onClick={() => setTab("api")}>访问 API</button><button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>日志</button><button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button></nav></header>}
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
         {tab === "studio" ? <Studio apps={visibleApps} allApps={apps} filter={appFilter} setFilter={setAppFilter} onCreate={createApp} onOpen={openApp} onEdit={setEditingApp} onDuplicate={duplicateApp} onExport={exportDsl} onDelete={setDeleteTarget} onDeleteWorkspace={deleteWorkspace} disabled={!workspaceId} /> : tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : tab === "tools" ? <ToolsLibrary workspaceId={workspaceId} onError={showError} /> : tab === "plugins" ? <PluginMarketplace workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
           <ChatPanel app={activeApp} providers={providers} onSettings={() => setTab("settings")} onError={showError} />
         ) : tab === "workflow" ? (
           <WorkflowCanvas app={activeApp} workspaceId={workspaceId} providers={providers} onError={showError} />
+        ) : tab === "api" ? (
+          <ApiAccessPanel app={activeApp} onError={showError} />
+        ) : tab === "logs" ? (
+          <AppLogsPanel app={activeApp} onError={showError} />
         ) : (
           <SettingsPanel
             app={activeApp}
@@ -186,6 +190,34 @@ export function App() {
       {deleteTarget && <div className="modal-backdrop"><div className="modal confirm-modal"><div className="confirm-icon">!</div><h3>删除应用“{deleteTarget.name}”？</h3><p>相关工作流、运行记录和事件都会永久删除，此操作无法撤销。</p><div className="confirm-actions"><button onClick={() => setDeleteTarget(null)}>取消</button><button className="confirm-delete" onClick={() => deleteApp(deleteTarget)}>确认删除</button></div></div></div>}
     </div>
   );
+}
+
+function ApiAccessPanel({ app, onError }: { app: FlowApp; onError: (reason: unknown) => void }) {
+  const [keys, setKeys] = useState<ServiceApiKey[]>([]);
+  const [newKey, setNewKey] = useState("");
+  const [creating, setCreating] = useState(false);
+  const baseUrl = `${window.location.origin}/v1`;
+  const load = () => api.listApiKeys(app.id).then(setKeys).catch(onError);
+  useEffect(() => { void load(); }, [app.id]);
+  async function createKey() {
+    try { setCreating(true); const item = await api.createApiKey(app.id, "默认密钥"); setNewKey(item.api_key ?? ""); await load(); }
+    catch (reason) { onError(reason); } finally { setCreating(false); }
+  }
+  async function removeKey(id: string) { try { await api.deleteApiKey(app.id, id); await load(); } catch (reason) { onError(reason); } }
+  const curl = `curl -X POST '${baseUrl}/workflows/run' \\\n  -H 'Authorization: Bearer {API_KEY}' \\\n  -H 'Content-Type: application/json' \\\n  -d '{"input":"请总结这段内容"}'`;
+  return <section className="app-feature-page"><div className="feature-heading"><div><h2>Workflow 应用 API</h2><p>通过 Service API 调用当前工作流，适用于自动化、内容处理和后端服务集成。</p></div><button className="primary" onClick={createKey} disabled={creating}>{creating ? "创建中" : "＋ 创建 API Key"}</button></div>{newKey && <div className="api-key-once"><strong>请立即保存此密钥，仅显示一次</strong><code>{newKey}</code><button onClick={() => navigator.clipboard.writeText(newKey)}>复制</button><button onClick={() => setNewKey("")}>关闭</button></div>}<div className="api-doc-layout"><article className="api-doc"><h3>Base URL</h3><CodeBlock value={baseUrl} /><h3>Authentication</h3><p>所有请求都需要在 <code>Authorization</code> Header 中携带 Service API Key。</p><CodeBlock value="Authorization: Bearer {API_KEY}" /><h3>执行 Workflow</h3><p><code>POST /workflows/run</code> 同步执行当前应用工作流并返回最终输出。</p><CodeBlock value={curl} /><h3>返回示例</h3><CodeBlock value={'{"workflow_run_id":"...","status":"succeeded","output":"...","duration_ms":1234}'} /></article><aside className="api-key-panel"><header><strong>API 密钥</strong><span>{keys.length} 个</span></header>{keys.map((key) => <div className="api-key-row" key={key.id}><div><strong>{key.name}</strong><code>{key.key_prefix}••••••••</code><small>{key.last_used_at ? `最后使用 ${new Date(key.last_used_at).toLocaleString()}` : "尚未使用"}</small></div><button onClick={() => removeKey(key.id)}>删除</button></div>)}{!keys.length && <p>还没有 API Key，创建后即可调用。</p>}</aside></div></section>;
+}
+
+function CodeBlock({ value }: { value: string }) { return <div className="api-code"><button onClick={() => navigator.clipboard.writeText(value)}>复制</button><pre>{value}</pre></div>; }
+
+function AppLogsPanel({ app, onError }: { app: FlowApp; onError: (reason: unknown) => void }) {
+  const [runs, setRuns] = useState<WorkflowRun[]>([]);
+  const [status, setStatus] = useState("all");
+  const [query, setQuery] = useState("");
+  const load = () => api.listWorkflowRuns(app.id).then(setRuns).catch(onError);
+  useEffect(() => { void load(); }, [app.id]);
+  const visible = runs.filter((run) => (status === "all" || run.status === status) && `${run.input} ${run.output ?? ""} ${run.error ?? ""}`.toLowerCase().includes(query.toLowerCase()));
+  return <section className="app-feature-page logs-page"><div className="feature-heading"><div><h2>日志</h2><p>查看应用的工作流执行情况、触发来源和耗时。</p></div><button onClick={load}>↻ 刷新</button></div><div className="log-filters"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="running">运行中</option></select><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索输入、输出或错误" /></div><div className="log-table"><header><span>开始时间</span><span>状态</span><span>运行时间</span><span>触发方式</span><span>输入</span></header>{visible.map((run) => <div key={run.id}><span>{new Date(run.created_at).toLocaleString()}</span><span className={`run-status ${run.status}`}>{run.status === "succeeded" ? "SUCCESS" : run.status === "failed" ? "FAILED" : "RUNNING"}</span><span>{run.duration_ms == null ? "—" : `${(run.duration_ms / 1000).toFixed(3)}s`}</span><span>{run.trigger_source === "api" ? "⌘ API" : "▷ 调试"}</span><span title={run.input}>{run.input}</span></div>)}{!visible.length && <p>暂无符合条件的运行日志。</p>}</div></section>;
 }
 
 function Studio({ apps, allApps, filter, setFilter, onCreate, onOpen, onEdit, onDuplicate, onExport, onDelete, onDeleteWorkspace, disabled }: { apps: FlowApp[]; allApps: FlowApp[]; filter: AppFilter; setFilter: (value: AppFilter) => void; onCreate: () => void; onOpen: (app: FlowApp) => void; onEdit: (app: FlowApp) => void; onDuplicate: (app: FlowApp) => void; onExport: (app: FlowApp) => void; onDelete: (app: FlowApp) => void; onDeleteWorkspace: () => void; disabled: boolean }) {

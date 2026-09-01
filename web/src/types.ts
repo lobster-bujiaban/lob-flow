@@ -76,6 +76,30 @@ export interface WorkflowEvent {
   data: Record<string, unknown>;
 }
 
+export interface WorkflowRun {
+  id: string;
+  app_id: string;
+  status: "running" | "succeeded" | "failed";
+  input: string;
+  output: string | null;
+  error: string | null;
+  error_code: string | null;
+  created_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+  trigger_source: string;
+}
+
+export interface ServiceApiKey {
+  id: string;
+  app_id: string;
+  name: string;
+  key_prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+  api_key?: string;
+}
+
 export interface ToolDeclaration {
   name: string;
   label: string;
@@ -110,6 +134,7 @@ export interface DifyToolProvider {
   name: string;
   description: string;
   icon: string;
+  credential_schema: Record<string, { type: string; required?: boolean; label?: string }>;
   tools: ToolDeclaration[];
 }
 

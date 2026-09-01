@@ -5,7 +5,7 @@ import psycopg
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +36,9 @@ from lob_flow.models import (
     WorkflowEvent,
     WorkflowRun,
     WorkflowRunCreate,
+    ServiceApiKey,
+    ServiceApiKeyCreate,
+    ServiceApiKeyCreated,
     Workspace,
     WorkspaceCreate,
     Dataset, DatasetCreate, DatasetDocument, DocumentCreate, DocumentSegment,
@@ -353,6 +356,35 @@ def create_app(database: Database | None = None) -> FastAPI:
                 yield f"event: {event.type}\ndata: {payload}\n\n"
 
         return StreamingResponse(generate(), media_type="text/event-stream")
+
+    @application.get("/api/apps/{app_id}/workflow-runs", response_model=list[WorkflowRun])
+    def list_workflow_runs(app_id: str, limit: int = 100) -> list[WorkflowRun]:
+        return workflow_service.list_runs(app_id, limit)
+
+    @application.get("/api/apps/{app_id}/api-keys", response_model=list[ServiceApiKey])
+    def list_service_api_keys(app_id: str) -> list[ServiceApiKey]:
+        return workflow_service.list_api_keys(app_id)
+
+    @application.post("/api/apps/{app_id}/api-keys", response_model=ServiceApiKeyCreated, status_code=201)
+    def create_service_api_key(app_id: str, request: ServiceApiKeyCreate) -> ServiceApiKeyCreated:
+        return workflow_service.create_api_key(app_id, request.name)
+
+    @application.delete("/api/apps/{app_id}/api-keys/{key_id}", status_code=204)
+    def delete_service_api_key(app_id: str, key_id: str) -> Response:
+        workflow_service.delete_api_key(app_id, key_id)
+        return Response(status_code=204)
+
+    @application.post("/v1/workflows/run")
+    def run_workflow_api(request: WorkflowRunCreate, authorization: str = Header(default="")) -> dict:
+        if not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="请在 Authorization Header 中提供 Bearer API Key")
+        try:
+            app_id = workflow_service.authenticate_api_key(authorization[7:].strip())
+        except NotFoundError as exc:
+            raise HTTPException(status_code=401, detail="API Key 无效或已被删除") from exc
+        events = list(workflow_service.stream_run(app_id, request.input, "api"))
+        run = workflow_service.get_run(events[0].workflow_run_id)
+        return {"workflow_run_id": run.id, "status": run.status, "output": run.output, "error": run.error, "duration_ms": run.duration_ms}
 
     @application.get("/api/workflow-runs/{run_id}", response_model=WorkflowRun)
     def get_workflow_run(run_id: str) -> WorkflowRun:

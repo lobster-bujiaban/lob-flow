@@ -92,6 +92,15 @@ class DifyDaemonClient:
             provider_name = str(identity.get("name") or "")
             label = identity.get("label") or {}
             description = identity.get("description") or {}
+            raw_credentials = declaration.get("credentials_for_provider") or declaration.get("credentials_schema") or []
+            credential_schema = {
+                str(field.get("name") or field.get("variable")): {
+                    "type": str(field.get("type") or "secret-input"),
+                    "required": bool(field.get("required", True)),
+                    "label": ((field.get("label") or {}).get("zh_Hans") if isinstance(field.get("label"), dict) else field.get("label")) or field.get("name") or field.get("variable"),
+                }
+                for field in raw_credentials if isinstance(field, dict) and (field.get("name") or field.get("variable"))
+            }
             tools: list[dict] = []
             for tool in declaration.get("tools") or []:
                 tool_identity = tool.get("identity") or {}
@@ -103,7 +112,7 @@ class DifyDaemonClient:
                 }
                 tools.append({"name": str(tool_identity.get("name") or ""), "label": tool_label.get("zh_Hans") or tool_label.get("en_US") or tool_identity.get("name") or "Tool", "description": human.get("zh_Hans") or human.get("en_US") or "", "parameters": parameters})
             if plugin_id and provider_name and tools:
-                result.append({"plugin_id": plugin_id, "provider_name": provider_name, "name": label.get("zh_Hans") or label.get("en_US") or provider_name, "description": description.get("zh_Hans") or description.get("en_US") or "", "icon": identity.get("icon") or "⌘", "tools": tools})
+                result.append({"plugin_id": plugin_id, "provider_name": provider_name, "name": label.get("zh_Hans") or label.get("en_US") or provider_name, "description": description.get("zh_Hans") or description.get("en_US") or "", "icon": identity.get("icon") or "⌘", "credential_schema": credential_schema, "tools": tools})
         return result
 
     def get_tool(self, tenant_id: str, plugin_id: str, provider: str) -> dict:
@@ -115,8 +124,9 @@ class DifyDaemonClient:
         data = response.get("data", response)
         return data if isinstance(data, list) else [data]
 
-    def invoke_installed_tool(self, tenant_id: str, plugin_id: str, provider: str, tool_name: str, parameters: dict) -> str:
-        payload = {"user_id": "lob-flow", "data": {"provider": provider, "tool": tool_name, "credentials": {}, "credential_type": "unauthorized", "tool_parameters": parameters}}
+    def invoke_installed_tool(self, tenant_id: str, plugin_id: str, provider: str, tool_name: str, parameters: dict, credentials: dict | None = None) -> str:
+        credentials = credentials or {}
+        payload = {"user_id": "lob-flow", "data": {"provider": provider, "tool": tool_name, "credentials": credentials, "credential_type": "api-key" if credentials else "unauthorized", "tool_parameters": parameters}}
         request = Request(f"{self.base_url}/plugin/{tenant_id}/dispatch/tool/invoke", data=json.dumps(payload).encode(), method="POST", headers={"X-Api-Key": self.api_key, "X-Plugin-ID": plugin_id, "Content-Type": "application/json"})
         messages: list[str] = []
         try:
@@ -129,7 +139,19 @@ class DifyDaemonClient:
                         continue
                     event = json.loads(line)
                     if event.get("code") not in (None, 0):
-                        raise DifyDaemonError(str(event.get("message") or event))
+                        error = str(event.get("message") or event)
+                        for _ in range(3):
+                            try:
+                                decoded = json.loads(error)
+                            except (json.JSONDecodeError, TypeError):
+                                break
+                            if isinstance(decoded, dict):
+                                error = str(decoded.get("message") or decoded.get("error") or decoded)
+                            else:
+                                break
+                        if "token is required" in error.lower():
+                            error = "语雀插件缺少 Token，请在该节点的“插件授权”中填写语雀访问令牌。"
+                        raise DifyDaemonError(error)
                     data = event.get("data", event)
                     message = data.get("message", {}) if isinstance(data, dict) else {}
                     if isinstance(message, dict) and "text" in message:
