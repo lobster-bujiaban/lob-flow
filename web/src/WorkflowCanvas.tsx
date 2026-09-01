@@ -246,7 +246,13 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
           <Controls />
         </ReactFlow>
         <div className="flow-palette"><button className={paletteOpen ? "active" : ""} onClick={() => setPaletteOpen((open) => !open)} title="添加节点">＋</button><button onClick={() => setPanelMode("run")} title="测试运行">▷</button></div>
-        {paletteOpen && <UnifiedNodeLibrary plugins={plugins} difyTools={difyTools} addNode={addNode} close={() => setPaletteOpen(false)} />}
+        {paletteOpen && <UnifiedNodeLibrary plugins={plugins} difyTools={difyTools} addNode={addNode} selectStart={() => {
+          const start = nodes.find((node) => node.data.workflow.type === "start");
+          if (!start) return;
+          setSelectedId(start.id);
+          setPanelMode("node");
+          setPaletteOpen(false);
+        }} close={() => setPaletteOpen(false)} />}
       </div>
       {panelMode && <aside className="flow-inspector"><button className="inspector-close" onClick={() => { setPanelMode(null); setSelectedId(null); }}>×</button>{panelMode === "node" && selected ? <NodeInspector node={selected.data.workflow} providers={providers} plugins={plugins} difyTools={difyTools} datasets={datasets} update={updateSelected} remove={deleteSelected} runNode={() => runSelectedNode(selected.id)} running={running} /> : <RunInspector input={input} setInput={setInput} run={run} running={running} answer={answer} />}</aside>}
     </div>
@@ -254,9 +260,10 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
   </section>;
 }
 
-function UnifiedNodeLibrary({ plugins, difyTools, addNode, close }: { plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; addNode: (type: Exclude<WorkflowNodeType, "start">, plugin?: PluginCatalogItem, toolName?: string, dify?: DifyToolProvider) => void; close: () => void }) {
+function UnifiedNodeLibrary({ plugins, difyTools, addNode, selectStart, close }: { plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; addNode: (type: Exclude<WorkflowNodeType, "start">, plugin?: PluginCatalogItem, toolName?: string, dify?: DifyToolProvider) => void; selectStart: () => void; close: () => void }) {
   const [tab, setTab] = useState<"nodes" | "tools" | "start">("nodes");
   const [query, setQuery] = useState("");
+  const [hoveredTrigger, setHoveredTrigger] = useState("user-input");
   const needle = query.trim().toLowerCase();
   const builtin = plugins.filter((item) => item.installed && item.enabled);
   const nodeItems = ([
@@ -265,7 +272,20 @@ function UnifiedNodeLibrary({ plugins, difyTools, addNode, close }: { plugins: P
     { type: "answer", icon: "✓", label: "回答", description: "输出工作流最终结果", group: "基础" },
     { type: "template", icon: "T", label: "模板转换", description: "组合和转换上游变量", group: "转换" },
   ] satisfies Array<{ type: Exclude<WorkflowNodeType, "start">; icon: string; label: string; description: string; group: string }>).filter((item) => !needle || `${item.label}${item.description}`.toLowerCase().includes(needle));
-  return <div className="unified-node-library"><header><nav><button className={tab === "nodes" ? "active" : ""} onClick={() => setTab("nodes")}>节点</button><button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>工具</button><button className={tab === "start" ? "active" : ""} onClick={() => setTab("start")}>开始</button></nav><button onClick={close}>×</button></header><div className="node-library-search">⌕<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === "tools" ? "搜索已安装工具" : "搜索节点"} /></div>{tab === "nodes" && <div className="node-library-scroll">{["基础", "转换"].map((group) => { const items = nodeItems.filter((item) => item.group === group); return items.length ? <section key={group}><strong>{group}</strong>{items.map((item) => <button key={item.type} onClick={() => addNode(item.type)}><i>{item.icon}</i><span><b>{item.label}</b><small>{item.description}</small></span></button>)}</section> : null; })}</div>}{tab === "tools" && <div className="node-library-scroll tool-library-scroll">{difyTools.map((provider) => { const tools = provider.tools.filter((tool) => !needle || `${tool.label}${tool.description}`.toLowerCase().includes(needle)); return tools.length ? <section key={provider.plugin_id}><strong>{provider.name}<em>Daemon</em></strong>{tools.map((tool) => <button key={tool.name} onClick={() => addNode("tool", undefined, tool.name, provider)}><i>{provider.name.slice(0, 2)}</i><span><b>{tool.label}</b><small>{tool.description}</small></span></button>)}</section> : null; })}{builtin.map((plugin) => { const tools = plugin.manifest.tools.filter((tool) => !needle || `${tool.label}${tool.description}`.toLowerCase().includes(needle)); return tools.length ? <section key={plugin.manifest.plugin_id}><strong>{plugin.manifest.name}<em>LOB</em></strong>{tools.map((tool) => <button key={tool.name} onClick={() => addNode("tool", plugin, tool.name)}><i>{plugin.manifest.icon}</i><span><b>{tool.label}</b><small>{tool.description}</small></span></button>)}</section> : null; })}{!difyTools.length && !builtin.length && <p>还没有已安装工具，请先到插件市场安装。</p>}</div>}{tab === "start" && <div className="node-library-start"><i>START</i><strong>开始节点已存在</strong><p>开始节点是工作流唯一入口，可在右侧配置输入变量。</p></div>}</div>;
+  const triggers = [
+    { id: "user-input", icon: "⌁", label: "用户输入", badge: "最常用", description: "定义当工作流按需启动时，需要向终端用户收集的输入。", author: "LOB Flow", enabled: true },
+    { id: "schedule", icon: "◷", label: "定时触发器", badge: "即将支持", description: "按照预设的时间计划自动启动工作流。", author: "LOB Flow", enabled: false },
+    { id: "webhook", icon: "⌘", label: "Webhook 触发器", badge: "即将支持", description: "收到外部系统的 Webhook 请求时启动工作流。", author: "LOB Flow", enabled: false }
+  ].filter((item) => !needle || `${item.label}${item.description}`.toLowerCase().includes(needle));
+  const activeTrigger = triggers.find((item) => item.id === hoveredTrigger);
+  return <div className="unified-node-library">
+    <header><nav><button className={tab === "nodes" ? "active" : ""} onClick={() => setTab("nodes")}>节点</button><button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>工具</button><button className={tab === "start" ? "active" : ""} onClick={() => setTab("start")}>开始</button></nav><button onClick={close}>×</button></header>
+    <div className="node-library-search">⌕<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === "tools" ? "搜索已安装工具" : tab === "start" ? "搜索触发器…" : "搜索节点"} /></div>
+    {tab === "nodes" && <div className="node-library-scroll">{["基础", "转换"].map((group) => { const items = nodeItems.filter((item) => item.group === group); return items.length ? <section key={group}><strong>{group}</strong>{items.map((item) => <button key={item.type} onClick={() => addNode(item.type)}><i>{item.icon}</i><span><b>{item.label}</b><small>{item.description}</small></span></button>)}</section> : null; })}</div>}
+    {tab === "tools" && <div className="node-library-scroll tool-library-scroll">{difyTools.map((provider) => { const tools = provider.tools.filter((tool) => !needle || `${tool.label}${tool.description}`.toLowerCase().includes(needle)); return tools.length ? <section key={provider.plugin_id}><strong>{provider.name}<em>Daemon</em></strong>{tools.map((tool) => <button key={tool.name} onClick={() => addNode("tool", undefined, tool.name, provider)}><i>{provider.name.slice(0, 2)}</i><span><b>{tool.label}</b><small>{tool.description}</small></span></button>)}</section> : null; })}{builtin.map((plugin) => { const tools = plugin.manifest.tools.filter((tool) => !needle || `${tool.label}${tool.description}`.toLowerCase().includes(needle)); return tools.length ? <section key={plugin.manifest.plugin_id}><strong>{plugin.manifest.name}<em>LOB</em></strong>{tools.map((tool) => <button key={tool.name} onClick={() => addNode("tool", plugin, tool.name)}><i>{plugin.manifest.icon}</i><span><b>{tool.label}</b><small>{tool.description}</small></span></button>)}</section> : null; })}{!difyTools.length && !builtin.length && <p>还没有已安装工具，请先到插件市场安装。</p>}</div>}
+    {tab === "start" && <div className="start-trigger-list">{triggers.map((item) => <button key={item.id} className={!item.enabled ? "disabled" : ""} onMouseEnter={() => setHoveredTrigger(item.id)} onFocus={() => setHoveredTrigger(item.id)} onClick={item.enabled ? selectStart : undefined}><i>{item.icon}</i><span>{item.label}</span><em>{item.badge}</em></button>)}{!triggers.length && <p>没有匹配的触发器</p>}</div>}
+    {tab === "start" && activeTrigger && <aside className="start-trigger-tip"><i>{activeTrigger.icon}</i><strong>{activeTrigger.label}</strong><p>{activeTrigger.description}</p><small>作者 {activeTrigger.author}</small></aside>}
+  </div>;
 }
 
 function NodeInspector({ node, providers, plugins, difyTools, datasets, update, remove, runNode, running }: { node: WorkflowNode; providers: ProviderConfig[]; plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; datasets: Dataset[]; update: (patch: Partial<WorkflowNode>, config?: Record<string, unknown>) => void; remove: () => void; runNode: () => void; running: boolean }) {
