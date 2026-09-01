@@ -301,19 +301,32 @@ function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; prov
   const [answer, setAnswer] = useState("");
   const [running, setRunning] = useState(false);
   const [meta, setMeta] = useState("");
+  const [inputVariables, setInputVariables] = useState<StartInputVariable[]>([]);
+  const [structuredInputs, setStructuredInputs] = useState<Record<string, unknown>>({});
+  const [submittedInputs, setSubmittedInputs] = useState<Record<string, unknown> | null>(null);
   const usesWorkflow = app.app_type === "workflow" || app.app_type === "chatflow";
   const hasProvider = !!app.draft.model.provider_config_id && providers.some((item) => item.id === app.draft.model.provider_config_id);
   const canRun = usesWorkflow || hasProvider;
+  useEffect(() => {
+    if (!usesWorkflow) { setInputVariables([]); return; }
+    api.getWorkflow(app.id).then((draft) => {
+      const variables = (draft.definition.nodes.find((node) => node.type === "start")?.config.variables as StartInputVariable[] | undefined) ?? [];
+      setInputVariables(variables);
+      setStructuredInputs(Object.fromEntries(variables.filter((variable) => variable.default !== undefined && variable.default !== "").map((variable) => [variable.name, variable.default])));
+    }).catch(onError);
+  }, [app.id, usesWorkflow]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!canRun) { onError("请先配置真实模型供应商和 API Key，再运行应用。"); return; }
-    if (!input.trim() || running) return;
-    const message = input.trim();
-    setQuestion(message); setInput(""); setAnswer(""); setMeta(""); setRunning(true);
+    const missing = inputVariables.some((variable) => variable.required && (structuredInputs[variable.name] ?? variable.default ?? "") === "");
+    if ((inputVariables.length ? missing : !input.trim()) || running) return;
+    const payload = inputVariables.length ? structuredInputs : input.trim();
+    const message = inputVariables.length ? JSON.stringify(structuredInputs, null, 2) : input.trim();
+    setQuestion(message); setSubmittedInputs(inputVariables.length ? { ...structuredInputs } : null); if (!inputVariables.length) setInput(""); setAnswer(""); setMeta(""); setRunning(true);
     try {
       if (usesWorkflow) {
-        await api.streamWorkflow(app.id, message, (item) => {
+        await api.streamWorkflow(app.id, payload, (item) => {
           if (item.type === "workflow_succeeded") {
             setAnswer(String(item.data.output ?? ""));
             setMeta(`${item.data.duration_ms ?? "--"} ms · 工作流运行完成`);
@@ -339,11 +352,11 @@ function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; prov
       <div className="conversation">
         {!canRun && <div className="model-required"><span>AI</span><h3>还没有可用的真实模型</h3><p>配置 OpenAI-compatible API Key，并为当前应用选择模型后即可调试。</p><button className="primary" onClick={onSettings}>前往模型设置</button></div>}
         {canRun && !question && !answer && !running && <div className="conversation-empty"><span>✦</span><h3>测试你的应用</h3><p>{usesWorkflow ? "消息会从开始节点进入，并执行当前工作流中的全部节点。" : "输入一条消息，观察模型输出和运行指标。"}</p></div>}
-        {question && <div className="message user-message"><div><div className="bubble">{question}</div></div><div className="avatar user-avatar">你</div></div>}
+        {question && <div className="message user-message"><div><div className="bubble">{submittedInputs ? <dl className="submitted-inputs">{Object.entries(submittedInputs).map(([key, value]) => <div key={key}><dt>{inputVariables.find((variable) => variable.name === key)?.label || key}</dt><dd>{typeof value === "boolean" ? value ? "是" : "否" : String(value)}</dd></div>)}</dl> : question}</div></div><div className="avatar user-avatar">你</div></div>}
         {(answer || running) && <div className="message ai-message"><div className="avatar ai-avatar"><img src={lobsterLogo} alt="LOB AI" /></div><div><div className="bubble">{answer ? <MarkdownResult content={answer} /> : <span className="typing">正在思考</span>}</div>{meta && <div className="message-meta">{meta}</div>}</div></div>}
       </div>
-      <form className="composer" onSubmit={submit}>
-        <textarea
+      <form className={`composer ${inputVariables.length ? "structured-composer" : ""}`} onSubmit={submit}>
+        {inputVariables.length ? <div className="chat-structured-inputs"><header><div><strong>运行参数</strong><small>来自开始节点的输入定义</small></div><button type="button" onClick={() => setStructuredInputs({})}>清空</button></header><div>{inputVariables.map((variable) => <label key={variable.name}><span>{variable.label || variable.name}{variable.required ? <b>*</b> : null}</span><small>{variable.description || `${variable.name} · ${variable.type}`}</small>{variable.type === "boolean" ? <select value={String(structuredInputs[variable.name] ?? variable.default ?? "false")} onChange={(event) => setStructuredInputs({ ...structuredInputs, [variable.name]: event.target.value === "true" })}><option value="false">否</option><option value="true">是</option></select> : <input type={variable.type === "number" ? "number" : "text"} value={String(structuredInputs[variable.name] ?? variable.default ?? "")} onChange={(event) => setStructuredInputs({ ...structuredInputs, [variable.name]: event.target.value })} placeholder={`请输入${variable.label || variable.name}`} />}</label>)}</div></div> : <textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={(event) => {
@@ -354,8 +367,8 @@ function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; prov
           }}
           placeholder="输入消息，Enter 发送，Shift + Enter 换行…"
           rows={3}
-        />
-        <button className="send" disabled={!canRun || running || !input.trim()}>{running ? "运行中" : "发送"}</button>
+        />}
+        <button className="send" disabled={!canRun || running || (inputVariables.length ? inputVariables.some((variable) => variable.required && (structuredInputs[variable.name] ?? variable.default ?? "") === "") : !input.trim())}>{running ? "运行中" : inputVariables.length ? "运行工作流" : "发送"}</button>
       </form>
     </div>
   </section>;
