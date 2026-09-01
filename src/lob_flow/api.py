@@ -39,6 +39,10 @@ from lob_flow.models import (
     ServiceApiKey,
     ServiceApiKeyCreate,
     ServiceApiKeyCreated,
+    PluginCredential,
+    PluginCredentialCreate,
+    WorkflowVersion,
+    PluginRuntimeState,
     Workspace,
     WorkspaceCreate,
     Dataset, DatasetCreate, DatasetDocument, DocumentCreate, DocumentSegment,
@@ -67,6 +71,7 @@ def create_app(database: Database | None = None) -> FastAPI:
     async def lifespan(_: FastAPI):
         database.initialize()
         plugin_service.ensure_catalog()
+        workflow_service.migrate_inline_credentials()
         yield
 
     application = FastAPI(title="LOB Flow", version="0.1.0", lifespan=lifespan)
@@ -239,6 +244,11 @@ def create_app(database: Database | None = None) -> FastAPI:
     def installed_dify_tools(workspace_id: str) -> list[dict]:
         return dify_daemon.normalized_tools(workspace_id)
 
+    @application.delete("/api/workspaces/{workspace_id}/dify-plugins/{plugin_id:path}", status_code=204)
+    def uninstall_dify_plugin(workspace_id: str, plugin_id: str) -> Response:
+        dify_daemon.uninstall_plugin(workspace_id, plugin_id)
+        return Response(status_code=204)
+
     @application.get("/api/dify-marketplace/plugins")
     def explore_dify_marketplace(q: str = "", limit: int = 200) -> list[dict]:
         return dify_marketplace.explore(q, limit)
@@ -348,6 +358,18 @@ def create_app(database: Database | None = None) -> FastAPI:
     def update_workflow(app_id: str, request: WorkflowDefinition) -> WorkflowDraft:
         return workflow_service.update_draft(app_id, request)
 
+    @application.post("/api/apps/{app_id}/workflow/publish", response_model=WorkflowVersion, status_code=201)
+    def publish_workflow(app_id: str) -> WorkflowVersion:
+        return workflow_service.publish(app_id)
+
+    @application.get("/api/apps/{app_id}/workflow/versions", response_model=list[WorkflowVersion])
+    def list_workflow_versions(app_id: str) -> list[WorkflowVersion]:
+        return workflow_service.list_versions(app_id)
+
+    @application.post("/api/apps/{app_id}/workflow/versions/{version_id}/rollback", response_model=WorkflowDraft)
+    def rollback_workflow(app_id: str, version_id: str) -> WorkflowDraft:
+        return workflow_service.rollback(app_id, version_id)
+
     @application.post("/api/apps/{app_id}/workflow-runs/stream")
     def stream_workflow(app_id: str, request: WorkflowRunCreate) -> StreamingResponse:
         def generate():
@@ -355,6 +377,13 @@ def create_app(database: Database | None = None) -> FastAPI:
                 payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
                 yield f"event: {event.type}\ndata: {payload}\n\n"
 
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
+    @application.post("/api/apps/{app_id}/workflow-nodes/{node_id}/stream")
+    def stream_workflow_node(app_id: str, node_id: str, request: WorkflowRunCreate) -> StreamingResponse:
+        def generate():
+            for event in workflow_service.stream_run(app_id, request.input, "node_debug", start_node_id=node_id):
+                yield f"event: {event.type}\ndata: {json.dumps(event.model_dump(mode='json'), ensure_ascii=False)}\n\n"
         return StreamingResponse(generate(), media_type="text/event-stream")
 
     @application.get("/api/apps/{app_id}/workflow-runs", response_model=list[WorkflowRun])
@@ -382,13 +411,38 @@ def create_app(database: Database | None = None) -> FastAPI:
             app_id = workflow_service.authenticate_api_key(authorization[7:].strip())
         except NotFoundError as exc:
             raise HTTPException(status_code=401, detail="API Key 无效或已被删除") from exc
-        events = list(workflow_service.stream_run(app_id, request.input, "api"))
+        events = list(workflow_service.stream_run(app_id, request.input, "api", use_published=True))
         run = workflow_service.get_run(events[0].workflow_run_id)
         return {"workflow_run_id": run.id, "status": run.status, "output": run.output, "error": run.error, "duration_ms": run.duration_ms}
+
+    @application.get("/api/workspaces/{workspace_id}/plugin-credentials", response_model=list[PluginCredential])
+    def list_plugin_credentials(workspace_id: str, plugin_id: str = "") -> list[PluginCredential]:
+        return workflow_service.list_plugin_credentials(workspace_id, plugin_id)
+
+    @application.post("/api/workspaces/{workspace_id}/plugin-credentials", response_model=PluginCredential, status_code=201)
+    def create_plugin_credential(workspace_id: str, request: PluginCredentialCreate) -> PluginCredential:
+        return workflow_service.create_plugin_credential(workspace_id, request)
+
+    @application.delete("/api/workspaces/{workspace_id}/plugin-credentials/{credential_id}", status_code=204)
+    def delete_plugin_credential(workspace_id: str, credential_id: str) -> Response:
+        workflow_service.delete_plugin_credential(workspace_id, credential_id)
+        return Response(status_code=204)
+
+    @application.get("/api/workspaces/{workspace_id}/plugin-runtime-states", response_model=list[PluginRuntimeState])
+    def list_plugin_runtime_states(workspace_id: str) -> list[PluginRuntimeState]:
+        return workflow_service.list_plugin_runtime_states(workspace_id)
+
+    @application.put("/api/workspaces/{workspace_id}/dify-plugins/{plugin_id:path}/enabled", response_model=PluginRuntimeState)
+    def set_dify_plugin_enabled(workspace_id: str, plugin_id: str, request: PluginEnableRequest) -> PluginRuntimeState:
+        return workflow_service.set_plugin_runtime_state(workspace_id, plugin_id, request.enabled)
 
     @application.get("/api/workflow-runs/{run_id}", response_model=WorkflowRun)
     def get_workflow_run(run_id: str) -> WorkflowRun:
         return workflow_service.get_run(run_id)
+
+    @application.post("/api/workflow-runs/{run_id}/retry", response_model=WorkflowRun)
+    def retry_workflow_run(run_id: str) -> WorkflowRun:
+        return workflow_service.retry_run(run_id)
 
     @application.get("/api/workflow-runs/{run_id}/nodes", response_model=list[NodeRun])
     def list_workflow_node_runs(run_id: str) -> list[NodeRun]:

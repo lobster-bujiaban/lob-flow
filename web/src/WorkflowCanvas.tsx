@@ -19,7 +19,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { api } from "./api";
-import type { App, Dataset, DifyToolProvider, PluginCatalogItem, ProviderConfig, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowNodeType } from "./types";
+import type { App, Dataset, DifyToolProvider, PluginCatalogItem, ProviderConfig, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowNodeType, WorkflowVersion } from "./types";
 
 type CanvasData = {
   workflow: WorkflowNode;
@@ -68,6 +68,8 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [panelMode, setPanelMode] = useState<"node" | "run" | null>(null);
   const [lastSaved, setLastSaved] = useState("");
+  const [versions, setVersions] = useState<WorkflowVersion[]>([]);
+  const [showVersions, setShowVersions] = useState(false);
 
   useEffect(() => {
     api.getWorkflow(app.id).then((draft) => loadDefinition(draft.definition)).catch(onError);
@@ -157,7 +159,17 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
   async function save(): Promise<boolean> {
     setSaving(true);
     try {
-      await api.updateWorkflow(app.id, definition());
+      const current = definition();
+      for (const node of current.nodes) {
+        const credentials = node.config.credentials as Record<string, string> | undefined;
+        if (node.type === "tool" && credentials && Object.values(credentials).some(Boolean)) {
+          const item = await api.createPluginCredential(workspaceId, String(node.config.plugin_id ?? ""), `${node.name} 授权`, credentials);
+          node.config = { ...node.config, credential_id: item.id };
+          delete node.config.credentials;
+        }
+      }
+      await api.updateWorkflow(app.id, current);
+      loadDefinition(current);
       setLastSaved(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
       setEdges((current) => current.map((edge) => ({ ...edge, animated: false })));
       return true;
@@ -165,6 +177,25 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
       onError(reason);
       return false;
     } finally { setSaving(false); }
+  }
+
+  async function publish() {
+    if (!(await save())) return;
+    try { const version = await api.publishWorkflow(app.id); setLastSaved(`已发布 v${version.version}`); }
+    catch (reason) { onError(reason); }
+  }
+  async function openVersions() { try { setVersions(await api.listWorkflowVersions(app.id)); setShowVersions(true); } catch (reason) { onError(reason); } }
+  async function rollback(version: WorkflowVersion) { try { const draft = await api.rollbackWorkflow(app.id, version.id); loadDefinition(draft.definition); setShowVersions(false); setLastSaved(`已回滚到 v${version.version}，请重新发布`); } catch (reason) { onError(reason); } }
+
+  async function runSelectedNode(nodeId: string) {
+    if (!input.trim() || running || !(await save())) return;
+    setRunning(true);
+    try {
+      await api.streamWorkflowNode(app.id, nodeId, input.trim(), (event) => {
+        if (event.node_id) setNodes((current) => current.map((node) => node.id === event.node_id ? { ...node, data: { ...node.data, status: event.type === "node_started" ? "running" : event.type === "node_succeeded" ? "succeeded" : event.type === "node_failed" ? "failed" : node.data.status, output: event.type === "node_delta" ? (node.data.output ?? "") + String(event.data.delta ?? "") : event.type === "node_succeeded" ? String((event.data.output as { value?: string })?.value ?? "") : node.data.output } } : node));
+        if (event.type === "workflow_failed") onError(`${event.data.error_code}: ${event.data.error}`);
+      });
+    } catch (reason) { onError(reason); } finally { setRunning(false); }
   }
 
   async function run() {
@@ -191,7 +222,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
   return <section className="flow-canvas-shell">
     <div className="flow-toolbar">
       <div><strong>{app.name}</strong><span>{saving ? "正在保存…" : lastSaved ? `已保存 ${lastSaved}` : "未保存的草稿"}</span></div>
-      <div className="flow-toolbar-actions"><button onClick={() => { setSelectedId(null); setPanelMode("run"); }}>▷ 测试运行</button><button onClick={() => save()} disabled={saving}>{saving ? "保存中" : "保存草稿"}</button><button className="primary" onClick={() => save()} disabled={saving}>发布</button></div>
+      <div className="flow-toolbar-actions"><button onClick={() => { setSelectedId(null); setPanelMode("run"); }}>▷ 测试运行</button><button onClick={openVersions}>版本</button><button onClick={() => save()} disabled={saving}>{saving ? "保存中" : "保存草稿"}</button><button className="primary" onClick={publish} disabled={saving}>发布</button></div>
     </div>
     <div className={`flow-canvas-main ${panelMode ? "panel-open" : ""}`}>
       <div className="flow-board">
@@ -217,8 +248,9 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
         <div className="flow-palette"><button className={paletteOpen ? "active" : ""} onClick={() => setPaletteOpen((open) => !open)} title="添加节点">＋</button><button onClick={() => setPanelMode("run")} title="测试运行">▷</button></div>
         {paletteOpen && <UnifiedNodeLibrary plugins={plugins} difyTools={difyTools} addNode={addNode} close={() => setPaletteOpen(false)} />}
       </div>
-      {panelMode && <aside className="flow-inspector"><button className="inspector-close" onClick={() => { setPanelMode(null); setSelectedId(null); }}>×</button>{panelMode === "node" && selected ? <NodeInspector node={selected.data.workflow} providers={providers} plugins={plugins} difyTools={difyTools} datasets={datasets} update={updateSelected} remove={deleteSelected} /> : <RunInspector input={input} setInput={setInput} run={run} running={running} answer={answer} />}</aside>}
+      {panelMode && <aside className="flow-inspector"><button className="inspector-close" onClick={() => { setPanelMode(null); setSelectedId(null); }}>×</button>{panelMode === "node" && selected ? <NodeInspector node={selected.data.workflow} providers={providers} plugins={plugins} difyTools={difyTools} datasets={datasets} update={updateSelected} remove={deleteSelected} runNode={() => runSelectedNode(selected.id)} running={running} /> : <RunInspector input={input} setInput={setInput} run={run} running={running} answer={answer} />}</aside>}
     </div>
+    {showVersions && <div className="modal-backdrop"><div className="modal workflow-version-modal"><div className="modal-head"><div><h3>发布版本</h3><p>API 执行最新发布版本；恢复后需重新发布才会生效。</p></div><button onClick={() => setShowVersions(false)}>×</button></div>{versions.map((version) => <div className="workflow-version-row" key={version.id}><div><strong>v{version.version}</strong><small>{new Date(version.created_at).toLocaleString()}</small></div><button onClick={() => rollback(version)}>恢复为草稿</button></div>)}{!versions.length && <p className="inspector-hint">尚未发布任何版本。</p>}</div></div>}
   </section>;
 }
 
@@ -236,7 +268,7 @@ function UnifiedNodeLibrary({ plugins, difyTools, addNode, close }: { plugins: P
   return <div className="unified-node-library"><header><nav><button className={tab === "nodes" ? "active" : ""} onClick={() => setTab("nodes")}>节点</button><button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>工具</button><button className={tab === "start" ? "active" : ""} onClick={() => setTab("start")}>开始</button></nav><button onClick={close}>×</button></header><div className="node-library-search">⌕<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === "tools" ? "搜索已安装工具" : "搜索节点"} /></div>{tab === "nodes" && <div className="node-library-scroll">{["基础", "转换"].map((group) => { const items = nodeItems.filter((item) => item.group === group); return items.length ? <section key={group}><strong>{group}</strong>{items.map((item) => <button key={item.type} onClick={() => addNode(item.type)}><i>{item.icon}</i><span><b>{item.label}</b><small>{item.description}</small></span></button>)}</section> : null; })}</div>}{tab === "tools" && <div className="node-library-scroll tool-library-scroll">{difyTools.map((provider) => { const tools = provider.tools.filter((tool) => !needle || `${tool.label}${tool.description}`.toLowerCase().includes(needle)); return tools.length ? <section key={provider.plugin_id}><strong>{provider.name}<em>Daemon</em></strong>{tools.map((tool) => <button key={tool.name} onClick={() => addNode("tool", undefined, tool.name, provider)}><i>{provider.name.slice(0, 2)}</i><span><b>{tool.label}</b><small>{tool.description}</small></span></button>)}</section> : null; })}{builtin.map((plugin) => { const tools = plugin.manifest.tools.filter((tool) => !needle || `${tool.label}${tool.description}`.toLowerCase().includes(needle)); return tools.length ? <section key={plugin.manifest.plugin_id}><strong>{plugin.manifest.name}<em>LOB</em></strong>{tools.map((tool) => <button key={tool.name} onClick={() => addNode("tool", plugin, tool.name)}><i>{plugin.manifest.icon}</i><span><b>{tool.label}</b><small>{tool.description}</small></span></button>)}</section> : null; })}{!difyTools.length && !builtin.length && <p>还没有已安装工具，请先到插件市场安装。</p>}</div>}{tab === "start" && <div className="node-library-start"><i>START</i><strong>开始节点已存在</strong><p>开始节点是工作流唯一入口，可在右侧配置输入变量。</p></div>}</div>;
 }
 
-function NodeInspector({ node, providers, plugins, difyTools, datasets, update, remove }: { node: WorkflowNode; providers: ProviderConfig[]; plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; datasets: Dataset[]; update: (patch: Partial<WorkflowNode>, config?: Record<string, unknown>) => void; remove: () => void }) {
+function NodeInspector({ node, providers, plugins, difyTools, datasets, update, remove, runNode, running }: { node: WorkflowNode; providers: ProviderConfig[]; plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; datasets: Dataset[]; update: (patch: Partial<WorkflowNode>, config?: Record<string, unknown>) => void; remove: () => void; runNode: () => void; running: boolean }) {
   const installed = plugins.filter((item) => item.installed && item.enabled);
   const activePlugin = installed.find((item) => item.manifest.plugin_id === node.config.plugin_id);
   const activeTool = activePlugin?.manifest.tools.find((tool) => tool.name === node.config.tool_name);
@@ -245,6 +277,7 @@ function NodeInspector({ node, providers, plugins, difyTools, datasets, update, 
   return <div className="inspector-content">
     <div className="inspector-title"><span>{node.type.toUpperCase()}</span><h3>节点配置</h3></div>
     <label>节点名称</label><input value={node.name} onChange={(event) => update({ name: event.target.value })} />
+    <button className="node-debug-button" onClick={runNode} disabled={running}>{running ? "运行中…" : "▷ 单独运行此节点"}</button>
     {node.type === "start" && <p className="inspector-hint">Start 是工作流唯一入口，不能删除。</p>}
     {node.type === "template" && <><label>Prompt 模板</label><textarea rows={6} value={String(node.config.template ?? "")} onChange={(event) => update({}, { template: event.target.value })} /><p className="inspector-hint">使用 <code>{"{input}"}</code> 引用上游输入。</p></>}
     {node.type === "llm" && <><label>模型配置</label><select value={String(node.config.provider_config_id ?? "")} onChange={(event) => update({}, { provider_config_id: event.target.value })}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><label>模型</label><input value={String(node.config.model ?? "gpt-5.4")} onChange={(event) => update({}, { model: event.target.value })} /><label>System Prompt</label><textarea rows={6} value={String(node.config.system_prompt ?? "")} onChange={(event) => update({}, { system_prompt: event.target.value })} /><div className="inspector-grid"><div><label>温度</label><input type="number" step="0.1" min="0" max="2" value={Number(node.config.temperature ?? 0.2)} onChange={(event) => update({}, { temperature: Number(event.target.value) })} /></div><div><label>最大 Token</label><input type="number" min="1" value={Number(node.config.max_tokens ?? 512)} onChange={(event) => update({}, { max_tokens: Number(event.target.value) })} /></div></div></>}

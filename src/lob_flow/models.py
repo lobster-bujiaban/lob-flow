@@ -166,6 +166,36 @@ class WorkflowDraft(BaseModel):
     updated_at: datetime
 
 
+class WorkflowVersion(BaseModel):
+    id: str
+    app_id: str
+    version: int
+    definition: WorkflowDefinition
+    created_at: datetime
+
+
+class PluginCredentialCreate(BaseModel):
+    plugin_id: str = Field(min_length=1, max_length=200)
+    name: str = Field(default="默认授权", min_length=1, max_length=100)
+    credentials: dict[str, str]
+
+
+class PluginCredential(BaseModel):
+    id: str
+    workspace_id: str
+    plugin_id: str
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class PluginRuntimeState(BaseModel):
+    workspace_id: str
+    plugin_id: str
+    enabled: bool
+    updated_at: datetime
+
+
 class WorkflowRunCreate(BaseModel):
     input: str = Field(min_length=1, max_length=20_000)
 

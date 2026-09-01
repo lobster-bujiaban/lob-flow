@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from lob_flow.database import Database
 from lob_flow.dify_daemon import DifyDaemonClient
+from lob_flow.encryption import CredentialCipher
 from lob_flow.models import (
     DraftDefinition,
     ModelConfig,
@@ -20,6 +21,10 @@ from lob_flow.models import (
     WorkflowRun,
     ServiceApiKey,
     ServiceApiKeyCreated,
+    PluginCredential,
+    PluginCredentialCreate,
+    WorkflowVersion,
+    PluginRuntimeState,
 )
 from lob_flow.provider import ModelGateway, ProviderError
 from lob_flow.plugin_service import PluginExecutionError, PluginService
@@ -36,6 +41,7 @@ class WorkflowService:
         self.plugin_service: PluginService | None = None
         self.knowledge_service: KnowledgeService | None = None
         self.dify_daemon: DifyDaemonClient | None = None
+        self.cipher = CredentialCipher.from_env()
 
     def get_draft(self, app_id: str) -> WorkflowDraft:
         app = self._get_app(app_id)
@@ -78,31 +84,41 @@ class WorkflowService:
             )
         return WorkflowDraft(app_id=app_id, definition=definition, updated_at=timestamp)
 
-    def stream_run(self, app_id: str, user_input: str, trigger_source: str = "debug") -> Iterator[WorkflowEvent]:
+    def stream_run(self, app_id: str, user_input: str, trigger_source: str = "debug", use_published: bool = False, start_node_id: str | None = None) -> Iterator[WorkflowEvent]:
         app = self._get_app(app_id)
-        draft = self.get_draft(app_id)
-        ordered = validate_and_sort(draft.definition)
+        version = self.get_latest_version(app_id) if use_published else None
+        if use_published and version is None:
+            raise WorkflowValidationError(["应用尚未发布工作流版本"])
+        definition = version.definition if version else self.get_draft(app_id).definition
+        ordered = validate_and_sort(definition)
+        if start_node_id:
+            index = next((i for i, node in enumerate(ordered) if node.id == start_node_id), -1)
+            if index < 0:
+                raise WorkflowValidationError([f"节点 {start_node_id} 不存在"])
+            ordered = [ordered[index]]
         run_id = str(uuid4())
         created_at = now()
         with self.database.connect() as connection:
             connection.execute(
                 """INSERT INTO workflow_runs
-                   (id, app_id, status, input, definition_snapshot_json, created_at, trigger_source)
-                   VALUES (%s, %s, 'running', %s, %s, %s, %s)""",
+                   (id, app_id, status, input, definition_snapshot_json, created_at, trigger_source, workflow_version_id)
+                   VALUES (%s, %s, 'running', %s, %s, %s, %s, %s)""",
                 (
                     run_id,
                     app_id,
                     user_input,
-                    draft.definition.model_dump_json(),
+                    definition.model_dump_json(),
                     created_at.isoformat(),
                     trigger_source,
+                    version.id if version else None,
                 ),
             )
         sequence = 1
         yield self._event(run_id, sequence, "workflow_started", None, {"input": user_input})
         predecessors: dict[str, list[str]] = {node.id: [] for node in ordered}
-        for edge in draft.definition.edges:
-            predecessors[edge.target].append(edge.source)
+        for edge in definition.edges:
+            if edge.target in predecessors:
+                predecessors[edge.target].append(edge.source)
         node_values: dict[str, str] = {}
         value = user_input
         run_started = monotonic()
@@ -111,10 +127,12 @@ class WorkflowService:
 
         try:
             for node in ordered:
-                if node.type == "start":
+                if node.type == "start" or (start_node_id and node.id == start_node_id):
                     value = user_input
                 else:
-                    upstream_values = [node_values[node_id] for node_id in predecessors[node.id]]
+                    upstream_values = [node_values[node_id] for node_id in predecessors[node.id] if node_id in node_values]
+                    if not upstream_values:
+                        upstream_values = [value]
                     value = upstream_values[0] if len(upstream_values) == 1 else "\n".join(upstream_values)
                 node_run_id = str(uuid4())
                 current_node_id = node.id
@@ -175,7 +193,7 @@ class WorkflowService:
                     value = "".join(parts)
                 elif node.type == "tool":
                     parameters = self._resolve_parameters(
-                        node.config.get("parameters", {}), value
+                        node.config.get("parameters", {}), value, node_values
                     )
                     if node.config.get("runtime") == "dify":
                         if self.dify_daemon is None:
@@ -186,7 +204,7 @@ class WorkflowService:
                             str(node.config["provider_name"]),
                             str(node.config["tool_name"]),
                             parameters,
-                            dict(node.config.get("credentials") or {}),
+                            self.resolve_plugin_credentials(app["workspace_id"], node.config),
                         )
                         node_values[node.id] = value
                         node_duration = int((monotonic() - node_started) * 1000)
@@ -276,7 +294,8 @@ class WorkflowService:
                 current_node_run_id = None
 
             answer_nodes = [node for node in ordered if node.type == "answer"]
-            value = node_values[answer_nodes[-1].id]
+            if answer_nodes:
+                value = node_values[answer_nodes[-1].id]
             duration = int((monotonic() - run_started) * 1000)
             with self.database.connect() as connection:
                 connection.execute(
@@ -363,6 +382,99 @@ class WorkflowService:
             result.append(WorkflowRun(**values))
         return result
 
+    def publish(self, app_id: str) -> WorkflowVersion:
+        draft = self.get_draft(app_id)
+        validate_and_sort(draft.definition)
+        timestamp = now()
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT COALESCE(MAX(version), 0) + 1 AS version FROM workflow_versions WHERE app_id = %s", (app_id,)).fetchone()
+            item = WorkflowVersion(id=str(uuid4()), app_id=app_id, version=int(row["version"]), definition=draft.definition, created_at=timestamp)
+            connection.execute("INSERT INTO workflow_versions (id, app_id, version, definition_json, created_at) VALUES (%s, %s, %s, %s, %s)", (item.id, app_id, item.version, item.definition.model_dump_json(), timestamp.isoformat()))
+        return item
+
+    def list_versions(self, app_id: str) -> list[WorkflowVersion]:
+        self._get_app(app_id)
+        with self.database.connect() as connection:
+            rows = connection.execute("SELECT * FROM workflow_versions WHERE app_id = %s ORDER BY version DESC", (app_id,)).fetchall()
+        return [WorkflowVersion(id=row["id"], app_id=row["app_id"], version=row["version"], definition=WorkflowDefinition.model_validate_json(row["definition_json"]), created_at=row["created_at"]) for row in rows]
+
+    def get_latest_version(self, app_id: str) -> WorkflowVersion | None:
+        versions = self.list_versions(app_id)
+        return versions[0] if versions else None
+
+    def rollback(self, app_id: str, version_id: str) -> WorkflowDraft:
+        with self.database.connect() as connection:
+            row = connection.execute("SELECT definition_json FROM workflow_versions WHERE id = %s AND app_id = %s", (version_id, app_id)).fetchone()
+        if row is None:
+            raise NotFoundError("Workflow version not found")
+        return self.update_draft(app_id, WorkflowDefinition.model_validate_json(row["definition_json"]))
+
+    def create_plugin_credential(self, workspace_id: str, request: PluginCredentialCreate) -> PluginCredential:
+        timestamp = now()
+        item = PluginCredential(id=str(uuid4()), workspace_id=workspace_id, plugin_id=request.plugin_id, name=request.name, created_at=timestamp, updated_at=timestamp)
+        encrypted = self.cipher.encrypt(json.dumps(request.credentials, ensure_ascii=False))
+        with self.database.connect() as connection:
+            connection.execute("INSERT INTO plugin_credentials (id, workspace_id, plugin_id, name, credentials_encrypted, created_at, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s)", (item.id, workspace_id, item.plugin_id, item.name, encrypted, timestamp.isoformat(), timestamp.isoformat()))
+        return item
+
+    def list_plugin_credentials(self, workspace_id: str, plugin_id: str = "") -> list[PluginCredential]:
+        query = "SELECT id, workspace_id, plugin_id, name, created_at, updated_at FROM plugin_credentials WHERE workspace_id = %s"
+        params: tuple = (workspace_id,)
+        if plugin_id:
+            query += " AND plugin_id = %s"
+            params = (workspace_id, plugin_id)
+        with self.database.connect() as connection:
+            rows = connection.execute(query + " ORDER BY created_at DESC", params).fetchall()
+        return [PluginCredential(**dict(row)) for row in rows]
+
+    def delete_plugin_credential(self, workspace_id: str, credential_id: str) -> None:
+        with self.database.connect() as connection:
+            row = connection.execute("DELETE FROM plugin_credentials WHERE id = %s AND workspace_id = %s RETURNING id", (credential_id, workspace_id)).fetchone()
+        if row is None:
+            raise NotFoundError("Plugin credential not found")
+
+    def resolve_plugin_credentials(self, workspace_id: str, config: dict) -> dict:
+        with self.database.connect() as connection:
+            state = connection.execute("SELECT enabled FROM plugin_runtime_states WHERE workspace_id = %s AND plugin_id = %s", (workspace_id, str(config.get("plugin_id") or ""))).fetchone()
+        if state is not None and not state["enabled"]:
+            raise PluginExecutionError("插件已停用")
+        credential_id = str(config.get("credential_id") or "")
+        if credential_id:
+            with self.database.connect() as connection:
+                row = connection.execute("SELECT credentials_encrypted FROM plugin_credentials WHERE id = %s AND workspace_id = %s", (credential_id, workspace_id)).fetchone()
+            if row is None:
+                raise PluginExecutionError("插件授权不存在或已删除")
+            return json.loads(self.cipher.decrypt(row["credentials_encrypted"]))
+        return dict(config.get("credentials") or {})
+
+    def set_plugin_runtime_state(self, workspace_id: str, plugin_id: str, enabled: bool) -> PluginRuntimeState:
+        timestamp = now()
+        with self.database.connect() as connection:
+            connection.execute("INSERT INTO plugin_runtime_states (workspace_id, plugin_id, enabled, updated_at) VALUES (%s, %s, %s, %s) ON CONFLICT (workspace_id, plugin_id) DO UPDATE SET enabled = EXCLUDED.enabled, updated_at = EXCLUDED.updated_at", (workspace_id, plugin_id, enabled, timestamp.isoformat()))
+        return PluginRuntimeState(workspace_id=workspace_id, plugin_id=plugin_id, enabled=enabled, updated_at=timestamp)
+
+    def list_plugin_runtime_states(self, workspace_id: str) -> list[PluginRuntimeState]:
+        with self.database.connect() as connection:
+            rows = connection.execute("SELECT * FROM plugin_runtime_states WHERE workspace_id = %s", (workspace_id,)).fetchall()
+        return [PluginRuntimeState(**dict(row)) for row in rows]
+
+    def migrate_inline_credentials(self) -> None:
+        with self.database.connect() as connection:
+            rows = connection.execute("SELECT draft.app_id, app.workspace_id, draft.definition_json FROM workflow_drafts draft JOIN apps app ON app.id = draft.app_id").fetchall()
+        for row in rows:
+            definition = WorkflowDefinition.model_validate_json(row["definition_json"])
+            changed = False
+            for node in definition.nodes:
+                credentials = node.config.get("credentials")
+                if node.type != "tool" or not credentials or node.config.get("credential_id"):
+                    continue
+                item = self.create_plugin_credential(row["workspace_id"], PluginCredentialCreate(plugin_id=str(node.config.get("plugin_id", "")), name=f"{node.name} 授权", credentials=dict(credentials)))
+                node.config["credential_id"] = item.id
+                node.config.pop("credentials", None)
+                changed = True
+            if changed:
+                self.update_draft(row["app_id"], definition)
+
     def create_api_key(self, app_id: str, name: str) -> ServiceApiKeyCreated:
         self._get_app(app_id)
         token = f"lob-{secrets.token_urlsafe(32)}"
@@ -412,6 +524,11 @@ class WorkflowService:
             result.append(NodeRun(**values))
         return result
 
+    def retry_run(self, run_id: str) -> WorkflowRun:
+        previous = self.get_run(run_id)
+        events = list(self.stream_run(previous.app_id, previous.input, "retry"))
+        return self.get_run(events[0].workflow_run_id)
+
     def _event(
         self,
         run_id: str,
@@ -428,6 +545,8 @@ class WorkflowService:
             data=data,
             created_at=now(),
         )
+        if event_type == "node_delta":
+            return event
         try:
             with self.database.connect() as connection:
                 connection.execute(
@@ -476,10 +595,30 @@ class WorkflowService:
             raise WorkflowValidationError(["Knowledge 节点引用的知识库不存在或不属于当前空间"])
 
     @staticmethod
-    def _resolve_parameters(parameters: dict, value: str) -> dict:
+    def _resolve_parameters(parameters: dict, value: str, node_values: dict[str, str] | None = None) -> dict:
+        references = node_values or {}
+
         def resolve(item):
             if isinstance(item, str):
-                return item.replace("{input}", value)
+                result = item.replace("{input}", value)
+                for node_id, node_value in references.items():
+                    result = result.replace(f"{{{node_id}}}", node_value)
+                    prefix = f"{{{node_id}."
+                    while prefix in result:
+                        start = result.index(prefix)
+                        end = result.find("}", start)
+                        if end < 0:
+                            break
+                        path = result[start + len(prefix):end]
+                        try:
+                            current = json.loads(node_value)
+                            for part in path.split("."):
+                                current = current[int(part)] if isinstance(current, list) else current[part]
+                            replacement = current if isinstance(current, str) else json.dumps(current, ensure_ascii=False)
+                        except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
+                            replacement = ""
+                        result = result[:start] + str(replacement) + result[end + 1:]
+                return result
             if isinstance(item, dict):
                 return {key: resolve(child) for key, child in item.items()}
             if isinstance(item, list):

@@ -68,6 +68,30 @@ export interface WorkflowDraft {
   updated_at: string;
 }
 
+export interface WorkflowVersion {
+  id: string;
+  app_id: string;
+  version: number;
+  definition: WorkflowDefinition;
+  created_at: string;
+}
+
+export interface PluginCredential {
+  id: string;
+  workspace_id: string;
+  plugin_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PluginRuntimeState {
+  workspace_id: string;
+  plugin_id: string;
+  enabled: boolean;
+  updated_at: string;
+}
+
 export interface WorkflowEvent {
   workflow_run_id: string;
   sequence: number;

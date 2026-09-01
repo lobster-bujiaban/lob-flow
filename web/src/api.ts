@@ -1,4 +1,4 @@
-import type { App, AppType, Dataset, DatasetDocument, DifyToolProvider, DocumentSegment, DraftDefinition, NodeRun, PluginCatalogItem, ProviderConfig, RetrievalResult, RunEvent, ServiceApiKey, WorkflowDefinition, WorkflowDraft, WorkflowEvent, WorkflowRun, Workspace } from "./types";
+import type { App, AppType, Dataset, DatasetDocument, DifyToolProvider, DocumentSegment, DraftDefinition, NodeRun, PluginCatalogItem, PluginCredential, PluginRuntimeState, ProviderConfig, RetrievalResult, RunEvent, ServiceApiKey, WorkflowDefinition, WorkflowDraft, WorkflowEvent, WorkflowRun, WorkflowVersion, Workspace } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -74,6 +74,7 @@ export const api = {
     request<{ plugin_ids: string[] }>(`/api/workspaces/${workspaceId}/dify-plugins/installed`),
   listDifyTools: (workspaceId: string) =>
     request<DifyToolProvider[]>(`/api/workspaces/${workspaceId}/dify-tools`),
+  uninstallDifyPlugin: (workspaceId: string, pluginId: string) => request<void>(`/api/workspaces/${workspaceId}/dify-plugins/${pluginId}`, { method: "DELETE" }),
   exploreMarketplace: (query = "") =>
     request<Array<{ org: string; name: string; label: string; description: string; category: string; icon_url: string; install_count: number; verified: boolean; version: string; identifier: string; updated_at: string }>>(`/api/dify-marketplace/plugins?q=${encodeURIComponent(query)}&limit=200`),
   installMarketplacePlugin: (workspaceId: string, identifier: string) =>
@@ -109,8 +110,17 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(definition)
     }),
+  publishWorkflow: (appId: string) => request<WorkflowVersion>(`/api/apps/${appId}/workflow/publish`, { method: "POST" }),
+  listWorkflowVersions: (appId: string) => request<WorkflowVersion[]>(`/api/apps/${appId}/workflow/versions`),
+  rollbackWorkflow: (appId: string, versionId: string) => request<WorkflowDraft>(`/api/apps/${appId}/workflow/versions/${versionId}/rollback`, { method: "POST" }),
+  listPluginCredentials: (workspaceId: string, pluginId = "") => request<PluginCredential[]>(`/api/workspaces/${workspaceId}/plugin-credentials?plugin_id=${encodeURIComponent(pluginId)}`),
+  createPluginCredential: (workspaceId: string, pluginId: string, name: string, credentials: Record<string, string>) => request<PluginCredential>(`/api/workspaces/${workspaceId}/plugin-credentials`, { method: "POST", body: JSON.stringify({ plugin_id: pluginId, name, credentials }) }),
+  deletePluginCredential: (workspaceId: string, credentialId: string) => request<void>(`/api/workspaces/${workspaceId}/plugin-credentials/${credentialId}`, { method: "DELETE" }),
+  listPluginRuntimeStates: (workspaceId: string) => request<PluginRuntimeState[]>(`/api/workspaces/${workspaceId}/plugin-runtime-states`),
+  setDifyPluginEnabled: (workspaceId: string, pluginId: string, enabled: boolean) => request<PluginRuntimeState>(`/api/workspaces/${workspaceId}/dify-plugins/${pluginId}/enabled`, { method: "PUT", body: JSON.stringify({ enabled }) }),
   listWorkflowRuns: (appId: string) => request<WorkflowRun[]>(`/api/apps/${appId}/workflow-runs`),
   listWorkflowNodeRuns: (runId: string) => request<NodeRun[]>(`/api/workflow-runs/${runId}/nodes`),
+  retryWorkflowRun: (runId: string) => request<WorkflowRun>(`/api/workflow-runs/${runId}/retry`, { method: "POST" }),
   listApiKeys: (appId: string) => request<ServiceApiKey[]>(`/api/apps/${appId}/api-keys`),
   createApiKey: (appId: string, name: string) => request<ServiceApiKey>(`/api/apps/${appId}/api-keys`, { method: "POST", body: JSON.stringify({ name }) }),
   deleteApiKey: (appId: string, keyId: string) => request<void>(`/api/apps/${appId}/api-keys/${keyId}`, { method: "DELETE" }),
@@ -161,5 +171,11 @@ export const api = {
       }
       if (done) break;
     }
+  },
+  async streamWorkflowNode(appId: string, nodeId: string, input: string, onEvent: (event: WorkflowEvent) => void) {
+    const response = await fetch(`/api/apps/${appId}/workflow-nodes/${nodeId}/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input }) });
+    if (!response.ok || !response.body) throw new Error(`节点运行失败：${response.status}`);
+    const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
+    while (true) { const { value, done } = await reader.read(); buffer += decoder.decode(value, { stream: !done }); const blocks = buffer.split("\n\n"); buffer = blocks.pop() ?? ""; for (const block of blocks) { const data = block.split("\n").find((line) => line.startsWith("data: "))?.slice(6); if (data) onEvent(JSON.parse(data) as WorkflowEvent); } if (done) break; }
   }
 };

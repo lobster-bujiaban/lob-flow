@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import type { App as FlowApp, AppType, DraftDefinition, NodeRun, ProviderConfig, ServiceApiKey, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowRun, Workspace } from "./types";
 import lobsterLogo from "./assets/lobster-logo.png";
@@ -42,6 +42,8 @@ export function App() {
   const [showCreateApp, setShowCreateApp] = useState(false);
   const [editingApp, setEditingApp] = useState<FlowApp | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<FlowApp | null>(null);
+  const [importTarget, setImportTarget] = useState<FlowApp | null>(null);
+  const importRef = useRef<HTMLInputElement>(null);
 
   const activeApp = useMemo(() => apps.find((item) => item.id === appId), [apps, appId]);
   const visibleApps = useMemo(() => appFilter === "all" ? apps : apps.filter((item) => item.app_type === appFilter), [apps, appFilter]);
@@ -156,6 +158,35 @@ export function App() {
     } catch (reason) { showError(reason); }
   }
 
+  async function importDsl(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !workspaceId) return;
+    try {
+      const payload = JSON.parse(await file.text()) as { format?: string; app?: Partial<FlowApp>; workflow?: WorkflowDefinition };
+      if (payload.format !== "lob-flow/v1" || !payload.app || !payload.workflow || !Array.isArray(payload.workflow.nodes) || !Array.isArray(payload.workflow.edges)) throw new Error("不是有效的 LOB Flow DSL 文件");
+      if (!payload.workflow.nodes.some((node) => node.type === "start") || !payload.workflow.nodes.some((node) => node.type === "answer")) throw new Error("DSL 必须包含开始和回答节点");
+      const providerIds = new Set(providers.map((provider) => provider.id));
+      const fallbackProvider = providers[0]?.id ?? "";
+      const definition: WorkflowDefinition = {
+        ...payload.workflow,
+        nodes: payload.workflow.nodes.map((node) => node.type === "llm" && !providerIds.has(String(node.config.provider_config_id ?? "")) ? { ...node, config: { ...node.config, provider_config_id: fallbackProvider } } : node),
+      };
+      if (definition.nodes.some((node) => node.type === "llm" && !node.config.provider_config_id)) throw new Error("DSL 包含 LLM 节点，请先在当前空间配置模型供应商");
+      let target = importTarget;
+      if (!target) {
+        target = await api.createApp(workspaceId, String(payload.app.name || file.name.replace(/\.lobflow\.json$/i, "")), (payload.app.app_type as AppType) || "workflow");
+        setApps((items) => [...items, target!]);
+      }
+      const draft = payload.app.draft as DraftDefinition | undefined;
+      if (draft) await api.updateDraft(target.id, { ...draft, model: { ...draft.model, provider_config_id: providerIds.has(String(draft.model.provider_config_id ?? "")) ? draft.model.provider_config_id : fallbackProvider || null } });
+      await api.updateWorkflow(target.id, definition);
+      const updated = await api.updateApp(target.id, { name: importTarget ? target.name : String(payload.app.name || target.name), description: importTarget ? target.description : String(payload.app.description || ""), app_type: importTarget ? target.app_type : (payload.app.app_type as AppType) || "workflow" });
+      setApps((items) => items.map((item) => item.id === updated.id ? updated : item));
+      setAppId(updated.id); setTab("workflow"); setImportTarget(null); setError("");
+    } catch (reason) { setImportTarget(null); showError(reason); }
+  }
+
   return (
     <div className="dify-shell">
       <header className="global-header">
@@ -166,7 +197,7 @@ export function App() {
       <main className="main">
         {activeApp && ["chat", "workflow", "api", "logs", "settings"].includes(tab) && <header className="app-header"><button className="app-back" onClick={() => setTab("studio")}>←</button><div className="app-header-title"><span>{appTypes.find((type) => type.id === activeApp.app_type)?.icon}</span><div><strong>{activeApp.name}</strong><small>{appTypes.find((type) => type.id === activeApp.app_type)?.label}</small></div></div><nav><button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button><button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button><button className={tab === "api" ? "active" : ""} onClick={() => setTab("api")}>访问 API</button><button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>日志</button><button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button></nav></header>}
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
-        {tab === "studio" ? <Studio apps={visibleApps} allApps={apps} filter={appFilter} setFilter={setAppFilter} onCreate={createApp} onOpen={openApp} onEdit={setEditingApp} onDuplicate={duplicateApp} onExport={exportDsl} onDelete={setDeleteTarget} onDeleteWorkspace={deleteWorkspace} disabled={!workspaceId} /> : tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : tab === "tools" ? <ToolsLibrary workspaceId={workspaceId} onError={showError} /> : tab === "plugins" ? <PluginMarketplace workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
+        {tab === "studio" ? <Studio apps={visibleApps} allApps={apps} filter={appFilter} setFilter={setAppFilter} onCreate={createApp} onImport={() => { setImportTarget(null); importRef.current?.click(); }} onImportInto={(app) => { if (window.confirm(`导入 DSL 将覆盖“${app.name}”当前的工作流草稿，是否继续？`)) { setImportTarget(app); importRef.current?.click(); } }} onOpen={openApp} onEdit={setEditingApp} onDuplicate={duplicateApp} onExport={exportDsl} onDelete={setDeleteTarget} onDeleteWorkspace={deleteWorkspace} disabled={!workspaceId} /> : tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : tab === "tools" ? <ToolsLibrary workspaceId={workspaceId} onError={showError} /> : tab === "plugins" ? <PluginMarketplace workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
           <ChatPanel app={activeApp} providers={providers} onSettings={() => setTab("settings")} onError={showError} />
         ) : tab === "workflow" ? (
           <WorkflowCanvas app={activeApp} workspaceId={workspaceId} providers={providers} onError={showError} />
@@ -185,6 +216,7 @@ export function App() {
           />
         )}
       </main>
+      <input ref={importRef} className="file-input" type="file" accept=".json,.lobflow.json,application/json" onChange={importDsl} />
       {showCreateApp && <div className="modal-backdrop"><form className="modal app-create-modal" onSubmit={submitCreateApp}><div className="modal-head"><div><h3>创建应用</h3><p>应用类型决定默认运行方式，创建后仍可使用工作流编排。</p></div><button type="button" onClick={() => setShowCreateApp(false)}>×</button></div><label>应用名称</label><input name="name" required autoFocus placeholder="例如：客户支持 Agent" /><label>应用类型</label><div className="app-type-options">{appTypes.map((type, index) => <label key={type.id}><input type="radio" name="app_type" value={type.id} defaultChecked={index === 1} /><span><i>{type.icon}</i><strong>{type.label}</strong><small>{type.description}</small></span></label>)}</div><button className="primary wide">创建应用</button></form></div>}
       {editingApp && <div className="modal-backdrop"><form className="modal" onSubmit={submitEditApp}><div className="modal-head"><div><h3>编辑应用信息</h3><p>修改名称、描述和应用分类。</p></div><button type="button" onClick={() => setEditingApp(null)}>×</button></div><label>应用名称</label><input name="name" defaultValue={editingApp.name} required /><label>应用类型</label><select name="app_type" defaultValue={editingApp.app_type}>{appTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}</select><label>应用描述</label><textarea name="description" rows={4} defaultValue={editingApp.description} /><button className="primary wide">保存修改</button></form></div>}
       {deleteTarget && <div className="modal-backdrop"><div className="modal confirm-modal"><div className="confirm-icon">!</div><h3>删除应用“{deleteTarget.name}”？</h3><p>相关工作流、运行记录和事件都会永久删除，此操作无法撤销。</p><div className="confirm-actions"><button onClick={() => setDeleteTarget(null)}>取消</button><button className="confirm-delete" onClick={() => deleteApp(deleteTarget)}>确认删除</button></div></div></div>}
@@ -235,12 +267,12 @@ function RunDetailModal({ run, nodes, close }: { run: WorkflowRun; nodes: NodeRu
 
 function CodePanel({ title, value }: { title: string; value: string }) { return <div className="run-code-panel"><header><strong>{title}</strong><button onClick={() => navigator.clipboard.writeText(value)}>复制</button></header><pre>{value || "—"}</pre></div>; }
 
-function Studio({ apps, allApps, filter, setFilter, onCreate, onOpen, onEdit, onDuplicate, onExport, onDelete, onDeleteWorkspace, disabled }: { apps: FlowApp[]; allApps: FlowApp[]; filter: AppFilter; setFilter: (value: AppFilter) => void; onCreate: () => void; onOpen: (app: FlowApp) => void; onEdit: (app: FlowApp) => void; onDuplicate: (app: FlowApp) => void; onExport: (app: FlowApp) => void; onDelete: (app: FlowApp) => void; onDeleteWorkspace: () => void; disabled: boolean }) {
+function Studio({ apps, allApps, filter, setFilter, onCreate, onImport, onImportInto, onOpen, onEdit, onDuplicate, onExport, onDelete, onDeleteWorkspace, disabled }: { apps: FlowApp[]; allApps: FlowApp[]; filter: AppFilter; setFilter: (value: AppFilter) => void; onCreate: () => void; onImport: () => void; onImportInto: (app: FlowApp) => void; onOpen: (app: FlowApp) => void; onEdit: (app: FlowApp) => void; onDuplicate: (app: FlowApp) => void; onExport: (app: FlowApp) => void; onDelete: (app: FlowApp) => void; onDeleteWorkspace: () => void; disabled: boolean }) {
   const [search, setSearch] = useState("");
   const [mineOnly, setMineOnly] = useState(false);
   const [menuId, setMenuId] = useState("");
   const visible = apps.filter((item) => `${item.name} ${item.description}`.toLowerCase().includes(search.toLowerCase()));
-  return <section className="studio-wrap"><div className="studio-controls"><nav><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>▦ 全部</button>{appTypes.map((type) => <button key={type.id} className={filter === type.id ? "active" : ""} onClick={() => setFilter(type.id)}>{type.icon} {type.label}</button>)}</nav><div><label className="mine-filter"><input type="checkbox" checked={mineOnly} onChange={(event) => setMineOnly(event.target.checked)} />我创建的</label><select className="tag-filter"><option>◇ 全部标签</option></select><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="⌕ 搜索" /><button className="studio-space-menu" onClick={onDeleteWorkspace} disabled={disabled}>•••</button></div></div><div className="studio-grid"><article className="studio-create-card"><strong>创建应用</strong><button onClick={onCreate} disabled={disabled}><span>＋</span><div>创建空白应用<small>选择类型，从零开始构建</small></div></button><button onClick={onCreate} disabled={disabled}><span>▤</span><div>从应用模板创建<small>使用预置场景快速开始</small></div></button><button onClick={onCreate} disabled={disabled}><span>↪</span><div>导入 DSL 文件<small>恢复或迁移已有应用</small></div></button></article>{visible.map((item) => { const type = appTypes.find((entry) => entry.id === item.app_type); return <article className="studio-card" key={item.id} onClick={() => onOpen(item)}><header><span>{type?.icon ?? "✦"}<b>{item.app_type === "workflow" ? "⌘" : "◉"}</b></span><div><h3>{item.name}</h3><small>LOB Flow · 编辑于 {new Date(item.updated_at).toLocaleDateString()}</small></div><div className="studio-card-menu"><button onClick={(event) => { event.stopPropagation(); setMenuId((id) => id === item.id ? "" : item.id); }}>•••</button>{menuId === item.id && <div onClick={(event) => event.stopPropagation()}><button onClick={() => { onEdit(item); setMenuId(""); }}>编辑信息</button><button onClick={() => { onDuplicate(item); setMenuId(""); }}>复制</button><button onClick={() => { onExport(item); setMenuId(""); }}>导出 DSL</button><button onClick={() => { onOpen(item); setMenuId(""); }}>打开调试</button><button className="delete" onClick={() => { onDelete(item); setMenuId(""); }}>删除</button></div>}</div></header><p>{item.description || type?.description}</p><footer><span>◇ 添加标签</span><i>{type?.label}</i></footer></article>; })}</div>{!visible.length && allApps.length > 0 && <div className="knowledge-empty">没有匹配的应用</div>}</section>;
+  return <section className="studio-wrap"><div className="studio-controls"><nav><button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>▦ 全部</button>{appTypes.map((type) => <button key={type.id} className={filter === type.id ? "active" : ""} onClick={() => setFilter(type.id)}>{type.icon} {type.label}</button>)}</nav><div><label className="mine-filter"><input type="checkbox" checked={mineOnly} onChange={(event) => setMineOnly(event.target.checked)} />我创建的</label><select className="tag-filter"><option>◇ 全部标签</option></select><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="⌕ 搜索" /><button className="studio-space-menu" onClick={onDeleteWorkspace} disabled={disabled}>•••</button></div></div><div className="studio-grid"><article className="studio-create-card"><strong>创建应用</strong><button onClick={onCreate} disabled={disabled}><span>＋</span><div>创建空白应用<small>选择类型，从零开始构建</small></div></button><button onClick={onCreate} disabled={disabled}><span>▤</span><div>从应用模板创建<small>使用预置场景快速开始</small></div></button><button onClick={onImport} disabled={disabled}><span>↪</span><div>导入 DSL 文件<small>恢复或迁移已有应用</small></div></button></article>{visible.map((item) => { const type = appTypes.find((entry) => entry.id === item.app_type); return <article className="studio-card" key={item.id} onClick={() => onOpen(item)}><header><span>{type?.icon ?? "✦"}<b>{item.app_type === "workflow" ? "⌘" : "◉"}</b></span><div><h3>{item.name}</h3><small>LOB Flow · 编辑于 {new Date(item.updated_at).toLocaleDateString()}</small></div><div className="studio-card-menu"><button onClick={(event) => { event.stopPropagation(); setMenuId((id) => id === item.id ? "" : item.id); }}>•••</button>{menuId === item.id && <div onClick={(event) => event.stopPropagation()}><button onClick={() => { onEdit(item); setMenuId(""); }}>编辑信息</button><button onClick={() => { onDuplicate(item); setMenuId(""); }}>复制</button><button onClick={() => { onExport(item); setMenuId(""); }}>导出 DSL</button><button onClick={() => { onImportInto(item); setMenuId(""); }}>导入 DSL</button><button onClick={() => { onOpen(item); setMenuId(""); }}>打开调试</button><button className="delete" onClick={() => { onDelete(item); setMenuId(""); }}>删除</button></div>}</div></header><p>{item.description || type?.description}</p><footer><span>◇ 添加标签</span><i>{type?.label}</i></footer></article>; })}</div>{!visible.length && allApps.length > 0 && <div className="knowledge-empty">没有匹配的应用</div>}</section>;
 }
 
 function Welcome({ onCreate, disabled }: { onCreate: () => void; disabled: boolean }) {

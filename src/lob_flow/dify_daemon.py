@@ -79,6 +79,16 @@ class DifyDaemonClient:
     def list_tools(self, tenant_id: str) -> dict:
         return self._request(tenant_id, "GET", "management/tools?page=1&page_size=256")
 
+    def uninstall_plugin(self, tenant_id: str, plugin_id: str) -> dict:
+        response = self.list_plugins(tenant_id)
+        data = response.get("data", response)
+        entries = data.get("list", []) if isinstance(data, dict) else []
+        entry = next((item for item in entries if isinstance(item, dict) and str(item.get("plugin_id") or str(item.get("plugin_unique_identifier") or "").split(":", 1)[0]) == plugin_id), None)
+        if entry is None:
+            raise DifyDaemonError("Plugin is not installed")
+        installation_id = entry.get("id") or entry.get("plugin_installation_id")
+        return self._json_request(tenant_id, "POST", "management/uninstall", {"plugin_installation_id": installation_id})
+
     def normalized_tools(self, tenant_id: str) -> list[dict]:
         response = self.list_tools(tenant_id)
         providers = response.get("data", [])

@@ -1,5 +1,6 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
+import type { DifyToolProvider, PluginRuntimeState } from "./types";
 
 function MarketplaceIcon({ src, name }: { src: string; name: string }) {
   const [failed, setFailed] = useState(false);
@@ -17,6 +18,8 @@ export function PluginMarketplace({ workspaceId, onError }: { workspaceId: strin
   const [view, setView] = useState<"installed" | "explore">("explore");
   const [installedIds, setInstalledIds] = useState<string[]>([]);
   const [installingIds, setInstallingIds] = useState<string[]>([]);
+  const [toolProviders, setToolProviders] = useState<DifyToolProvider[]>([]);
+  const [runtimeStates, setRuntimeStates] = useState<PluginRuntimeState[]>([]);
   const pollAttempts = useRef(0);
 
   async function refreshInstalled() {
@@ -26,7 +29,7 @@ export function PluginMarketplace({ workspaceId, onError }: { workspaceId: strin
   }
 
   useEffect(() => { api.daemonStatus().then((result) => setDaemonAvailable(result.available)).catch(() => setDaemonAvailable(false)); }, []);
-  useEffect(() => { refreshInstalled().catch(onError); }, [workspaceId]);
+  useEffect(() => { refreshInstalled().catch(onError); api.listDifyTools(workspaceId).then(setToolProviders).catch(onError); api.listPluginRuntimeStates(workspaceId).then(setRuntimeStates).catch(onError); }, [workspaceId]);
   useEffect(() => {
     if (!installingIds.length) { pollAttempts.current = 0; return; }
     const timer = window.setInterval(() => {
@@ -69,6 +72,16 @@ export function PluginMarketplace({ workspaceId, onError }: { workspaceId: strin
     finally { setBusy(""); }
   }
 
+  async function configurePlugin(pluginId: string) {
+    const provider = toolProviders.find((item) => item.plugin_id === pluginId);
+    if (!provider || !Object.keys(provider.credential_schema).length) { setNotice("此插件不需要 API Key 授权。"); return; }
+    const credentials: Record<string, string> = {};
+    for (const [key, schema] of Object.entries(provider.credential_schema)) { const value = window.prompt(`请输入${schema.label || key}`); if (value == null) return; credentials[key] = value; }
+    try { await api.createPluginCredential(workspaceId, pluginId, `${provider.name} 默认授权`, credentials); setNotice(`${provider.name} 授权已加密保存。`); } catch (reason) { onError(reason); }
+  }
+  async function togglePlugin(pluginId: string) { const current = runtimeStates.find((item) => item.plugin_id === pluginId)?.enabled !== false; try { const state = await api.setDifyPluginEnabled(workspaceId, pluginId, !current); setRuntimeStates((items) => [...items.filter((item) => item.plugin_id !== pluginId), state]); } catch (reason) { onError(reason); } }
+  async function uninstallPlugin(pluginId: string) { if (!window.confirm(`确定卸载 ${pluginId} 吗？相关工作流节点将无法运行。`)) return; try { await api.uninstallDifyPlugin(workspaceId, pluginId); await refreshInstalled(); setNotice(`已卸载 ${pluginId}`); } catch (reason) { onError(reason); } }
+
   return <section className="marketplace-wrap">
     <div className="plugin-view-tabs"><button className={view === "installed" ? "active" : ""} onClick={() => { setView("installed"); setCategory("all"); }}>已安装 <span>{installedIds.length}</span></button><button className={view === "explore" ? "active" : ""} onClick={() => setView("explore")}>探索 Marketplace</button></div>
     <div className="marketplace-head"><div><div className="eyebrow">DIFY PLUGIN MARKETPLACE</div><h2>插件市场</h2><p><span className={daemonAvailable ? "daemon-dot online" : "daemon-dot"} />{daemonAvailable ? "Dify Plugin Daemon 已连接" : "Dify Plugin Daemon 未连接"}</p></div><div className="marketplace-controls"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索插件…" /><input ref={uploadRef} className="file-input" type="file" accept=".difypkg" onChange={uploadDifypkg} /><button onClick={() => uploadRef.current?.click()} disabled={!daemonAvailable || busy === "difypkg"}>{busy === "difypkg" ? "安装中…" : "＋ 安装 .difypkg"}</button></div></div>
@@ -82,7 +95,7 @@ export function PluginMarketplace({ workspaceId, onError }: { workspaceId: strin
       <div className="plugin-card-head"><MarketplaceIcon src={item.icon_url} name={item.name} /><div><h3>{item.label} {item.verified && <span className="verified">✓</span>}</h3><p>{item.org}/{item.name} · v{item.version}</p></div></div>
       <p className="plugin-description">{item.description || "来自 Dify Marketplace"}</p>
       <div className="plugin-install-count">⇩ {item.install_count.toLocaleString()}</div>
-      <div className="plugin-actions"><button className={installed ? "installed-button" : "primary"} onClick={() => installFromMarketplace(item.identifier)} disabled={installed || installing || !daemonAvailable || busy === item.identifier}>{installed ? "已安装" : installing || busy === item.identifier ? "安装中…" : "安装"}</button></div>
+      <div className="plugin-actions">{installed && view === "installed" ? <><button onClick={() => configurePlugin(pluginId)}>配置授权</button><button onClick={() => togglePlugin(pluginId)}>{runtimeStates.find((state) => state.plugin_id === pluginId)?.enabled === false ? "启用" : "停用"}</button><button className="danger-link" onClick={() => uninstallPlugin(pluginId)}>卸载</button></> : <button className={installed ? "installed-button" : "primary"} onClick={() => installFromMarketplace(item.identifier)} disabled={installed || installing || !daemonAvailable || busy === item.identifier}>{installed ? "已安装" : installing || busy === item.identifier ? "安装中…" : "安装"}</button>}</div>
     </article>; })}</div>
   </section>;
 }
