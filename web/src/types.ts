@@ -3,6 +3,37 @@ export interface Workspace {
   name: string;
 }
 
+export type WorkspaceRole = "owner" | "admin" | "editor" | "viewer";
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  is_super_admin: boolean;
+  status: "active" | "disabled";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkspaceMember {
+  workspace_id: string;
+  user_id: string;
+  name: string;
+  email: string;
+  role: WorkspaceRole;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AccountInvitation {
+  id: string;
+  email: string;
+  name: string;
+  is_super_admin: boolean;
+  expires_at: string;
+  invite_token?: string | null;
+}
+
 export interface ModelConfig {
   provider: "openai_compatible";
   model: string;

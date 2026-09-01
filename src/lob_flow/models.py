@@ -16,6 +16,89 @@ class Workspace(BaseModel):
     created_at: datetime
 
 
+WorkspaceRole = Literal["owner", "admin", "editor", "viewer"]
+
+
+class AdminUserCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=8, max_length=128)
+    is_super_admin: bool = False
+
+
+class InitialAdminRegister(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class AccountInvitationCreate(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    name: str = Field(default="", max_length=100)
+    is_super_admin: bool = False
+
+
+class AccountInvitationAccept(BaseModel):
+    token: str = Field(min_length=20, max_length=500)
+    name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=8, max_length=128)
+
+
+class AccountInvitation(BaseModel):
+    id: str
+    email: str
+    name: str
+    is_super_admin: bool
+    expires_at: datetime
+    accepted_at: datetime | None = None
+    created_at: datetime
+    invite_token: str | None = None
+
+
+class UserLogin(BaseModel):
+    email: str = Field(min_length=5, max_length=254)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class User(BaseModel):
+    id: str
+    name: str
+    email: str
+    is_super_admin: bool = False
+    status: Literal["active", "disabled"] = "active"
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminUserUpdate(BaseModel):
+    is_super_admin: bool | None = None
+    status: Literal["active", "disabled"] | None = None
+
+
+class AuthSession(BaseModel):
+    user: User
+    token: str
+
+
+class WorkspaceMemberCreate(BaseModel):
+    user_id: str = Field(min_length=1, max_length=100)
+    role: WorkspaceRole = "viewer"
+
+
+class WorkspaceMemberUpdate(BaseModel):
+    role: WorkspaceRole
+
+
+class WorkspaceMember(BaseModel):
+    workspace_id: str
+    user_id: str
+    name: str
+    email: str
+    role: WorkspaceRole
+    created_at: datetime
+    updated_at: datetime
+
+
 class ModelConfig(BaseModel):
     provider: Literal["openai_compatible"] = "openai_compatible"
     model: str = "gpt-5.4"

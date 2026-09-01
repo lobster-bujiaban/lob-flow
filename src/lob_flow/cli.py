@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import uvicorn
 
 from lob_flow.api import create_app
+from lob_flow.auth_service import AuthService
 from lob_flow.database import Database
-from lob_flow.models import AppCreate, RunCreate, WorkspaceCreate
+from lob_flow.models import AdminUserCreate, AppCreate, RunCreate, WorkspaceCreate
 from lob_flow.service import FlowService
 
 
@@ -24,6 +26,10 @@ def main() -> None:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
 
+    create_admin = subparsers.add_parser("create-admin", help="provision a platform super administrator")
+    create_admin.add_argument("email")
+    create_admin.add_argument("--name", default="平台管理员")
+
     workspace = subparsers.add_parser("create-workspace")
     workspace.add_argument("name")
 
@@ -38,6 +44,17 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "serve":
         uvicorn.run(create_app(), host=args.host, port=args.port)
+        return
+
+    if args.command == "create-admin":
+        password = getpass.getpass("管理员密码（至少 8 位）：")
+        confirm = getpass.getpass("再次输入密码：")
+        if password != confirm:
+            parser.error("两次输入的密码不一致")
+        database = Database.from_env()
+        database.initialize()
+        result = AuthService(database).ensure_super_admin(args.email, password, args.name)
+        print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
         return
 
     service = _service()

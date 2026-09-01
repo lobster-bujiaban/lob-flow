@@ -51,13 +51,19 @@ class WorkflowService:
         self.cipher = CredentialCipher.from_env()
 
     def get_draft(self, app_id: str) -> WorkflowDraft:
-        app = self._get_app(app_id)
         with self.database.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM workflow_drafts WHERE app_id = %s", (app_id,)
+                """SELECT apps.draft_json, workflow_drafts.definition_json, workflow_drafts.updated_at
+                   FROM apps
+                   LEFT JOIN workflow_drafts ON workflow_drafts.app_id = apps.id
+                   WHERE apps.id = %s""",
+                (app_id,),
             ).fetchone()
             if row is None:
-                definition = default_workflow(app["draft"])
+                raise NotFoundError(f"App {app_id} not found")
+            if row["definition_json"] is None:
+                draft = DraftDefinition.model_validate_json(row["draft_json"])
+                definition = default_workflow(draft)
                 timestamp = now()
                 connection.execute(
                     """INSERT INTO workflow_drafts (app_id, definition_json, updated_at)
@@ -475,13 +481,6 @@ class WorkflowService:
                 "SELECT * FROM workflow_runs WHERE app_id = %s ORDER BY created_at DESC LIMIT %s",
                 (app_id, max(1, min(limit, 500))),
             ).fetchall()
-            attempt_rows = connection.execute(
-                "SELECT * FROM node_run_attempts WHERE workflow_run_id = %s ORDER BY node_id, attempt",
-                (run_id,),
-            ).fetchall()
-        attempts_by_node: dict[str, list[dict]] = {}
-        for attempt in attempt_rows:
-            attempts_by_node.setdefault(str(attempt["node_id"]), []).append(dict(attempt))
         result: list[WorkflowRun] = []
         for row in rows:
             values = dict(row)
@@ -573,22 +572,36 @@ class WorkflowService:
             rows = connection.execute("SELECT * FROM plugin_runtime_states WHERE workspace_id = %s", (workspace_id,)).fetchall()
         return [PluginRuntimeState(**dict(row)) for row in rows]
 
-    def migrate_inline_credentials(self) -> None:
+    def recover_interrupted_runs(self) -> int:
+        """Close runs left in progress when the previous process stopped."""
+        timestamp = now().isoformat()
+        error = "服务进程已重启，运行未能自动恢复"
         with self.database.connect() as connection:
-            rows = connection.execute("SELECT draft.app_id, app.workspace_id, draft.definition_json FROM workflow_drafts draft JOIN apps app ON app.id = draft.app_id").fetchall()
-        for row in rows:
-            definition = WorkflowDefinition.model_validate_json(row["definition_json"])
-            changed = False
-            for node in definition.nodes:
-                credentials = node.config.get("credentials")
-                if node.type != "tool" or not credentials or node.config.get("credential_id"):
-                    continue
-                item = self.create_plugin_credential(row["workspace_id"], PluginCredentialCreate(plugin_id=str(node.config.get("plugin_id", "")), name=f"{node.name} 授权", credentials=dict(credentials)))
-                node.config["credential_id"] = item.id
-                node.config.pop("credentials", None)
-                changed = True
-            if changed:
-                self.update_draft(row["app_id"], definition)
+            rows = connection.execute(
+                "SELECT id FROM workflow_runs WHERE status = 'running' FOR UPDATE"
+            ).fetchall()
+            run_ids = [str(row["id"]) for row in rows]
+            if not run_ids:
+                return 0
+            connection.execute(
+                """UPDATE workflow_runs
+                   SET status = 'failed', error = %s, error_code = 'run_interrupted', finished_at = %s
+                   WHERE status = 'running'""",
+                (error, timestamp),
+            )
+            connection.execute(
+                """UPDATE node_runs
+                   SET status = 'failed', error = %s, finished_at = %s
+                   WHERE status = 'running' AND workflow_run_id = ANY(%s)""",
+                (error, timestamp, run_ids),
+            )
+            connection.execute(
+                """UPDATE node_run_attempts
+                   SET status = 'failed', error = %s, finished_at = %s
+                   WHERE status = 'running' AND workflow_run_id = ANY(%s)""",
+                (error, timestamp, run_ids),
+            )
+        return len(run_ids)
 
     def create_api_key(self, app_id: str, name: str) -> ServiceApiKeyCreated:
         self._get_app(app_id)
@@ -630,6 +643,13 @@ class WorkflowService:
                 "SELECT * FROM node_runs WHERE workflow_run_id = %s ORDER BY started_at",
                 (run_id,),
             ).fetchall()
+            attempt_rows = connection.execute(
+                "SELECT * FROM node_run_attempts WHERE workflow_run_id = %s ORDER BY node_id, attempt",
+                (run_id,),
+            ).fetchall()
+        attempts_by_node: dict[str, list[dict]] = {}
+        for attempt in attempt_rows:
+            attempts_by_node.setdefault(str(attempt["node_id"]), []).append(dict(attempt))
         result: list[NodeRun] = []
         for row in rows:
             values = dict(row)
@@ -861,6 +881,14 @@ class WorkflowService:
             except WorkflowCancelledError:
                 future.cancel()
                 executor.shutdown(wait=False, cancel_futures=True)
+                duration = int((monotonic() - clock) * 1000)
+                with self.database.connect() as connection:
+                    connection.execute(
+                        """UPDATE node_run_attempts
+                           SET status = 'failed', error = %s, finished_at = %s, duration_ms = %s
+                           WHERE id = %s""",
+                        ("工作流已取消", now().isoformat(), duration, attempt_id),
+                    )
                 raise
             except FutureTimeoutError:
                 future.cancel()

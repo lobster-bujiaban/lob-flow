@@ -1,10 +1,37 @@
-import type { App, AppType, Dataset, DatasetDocument, DifyToolProvider, DocumentSegment, DraftDefinition, NodeRun, PluginCatalogItem, PluginCredential, PluginRuntimeState, ProviderConfig, RetrievalResult, RunEvent, ScheduleTrigger, ScheduleTriggerInput, ServiceApiKey, WorkflowDefinition, WorkflowDraft, WorkflowEvent, WorkflowRun, WorkflowVersion, Workspace } from "./types";
+import type { AccountInvitation, App, AppType, Dataset, DatasetDocument, DifyToolProvider, DocumentSegment, DraftDefinition, NodeRun, PluginCatalogItem, PluginCredential, PluginRuntimeState, ProviderConfig, RetrievalResult, RunEvent, ScheduleTrigger, ScheduleTriggerInput, ServiceApiKey, User, WorkflowDefinition, WorkflowDraft, WorkflowEvent, WorkflowRun, WorkflowVersion, Workspace, WorkspaceMember, WorkspaceRole } from "./types";
+
+const tokenKey = "lob-flow-management-token";
+
+async function managementToken(): Promise<string> {
+  const existing = localStorage.getItem(tokenKey);
+  if (existing) return existing;
+  throw new Error("请先登录");
+}
+
+async function authenticatedFetch(path: string, init?: RequestInit): Promise<Response> {
+  const token = await managementToken();
+  return fetch(path, { ...init, headers: { Authorization: `Bearer ${token}`, ...init?.headers } });
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers }
-  });
+  const method = (init?.method ?? "GET").toUpperCase();
+  const attempts = method === "GET" ? 3 : 1;
+  let response: Response | undefined;
+  let networkError: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      response = await authenticatedFetch(path, {
+        ...init,
+        headers: { "Content-Type": "application/json", ...init?.headers }
+      });
+      if (response.status !== 503 || attempt === attempts - 1) break;
+    } catch (reason) {
+      networkError = reason;
+      if (attempt === attempts - 1) throw reason;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 300 * (attempt + 1)));
+  }
+  if (!response) throw networkError ?? new Error("网络连接暂时不可用");
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.detail ?? `请求失败：${response.status}`);
@@ -14,6 +41,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  hasSession: () => !!localStorage.getItem(tokenKey),
+  clearSession: () => localStorage.removeItem(tokenKey),
+  login: async (email: string, password: string) => {
+    const response = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail ?? "登录失败");
+    localStorage.setItem(tokenKey, payload.token);
+    return payload as { user: User; token: string };
+  },
+  setupStatus: () => fetch("/api/auth/setup-status").then((response) => response.json() as Promise<{ initialized: boolean }>),
+  initialize: async (name: string, email: string, password: string) => {
+    const response = await fetch("/api/auth/initialize", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, email, password }) });
+    const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.detail ?? "初始化失败"); localStorage.setItem(tokenKey, payload.token); return payload;
+  },
+  invitationInfo: async (token: string) => { const response = await fetch(`/api/auth/invitations/${encodeURIComponent(token)}`); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.detail ?? "邀请链接无效"); return payload as AccountInvitation; },
+  acceptInvitation: async (token: string, name: string, password: string) => { const response = await fetch("/api/auth/invitations/accept", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, name, password }) }); const payload = await response.json().catch(() => ({})); if (!response.ok) throw new Error(payload.detail ?? "注册失败"); localStorage.setItem(tokenKey, payload.token); return payload; },
+  logout: async () => { try { await request<void>("/api/auth/logout", { method: "POST" }); } finally { localStorage.removeItem(tokenKey); } },
+  currentUser: () => request<User>("/api/auth/me"),
+  listPlatformUsers: () => request<User[]>("/api/admin/users"),
+  createInvitation: (body: { name: string; email: string; is_super_admin: boolean }) => request<AccountInvitation>("/api/admin/invitations", { method: "POST", body: JSON.stringify(body) }),
+  updatePlatformUser: (userId: string, body: { is_super_admin?: boolean; status?: "active" | "disabled" }) => request<User>(`/api/admin/users/${userId}`, { method: "PUT", body: JSON.stringify(body) }),
   listWorkspaces: () => request<Workspace[]>("/api/workspaces"),
   createWorkspace: (name: string) =>
     request<Workspace>("/api/workspaces", {
@@ -22,6 +70,11 @@ export const api = {
     }),
   deleteWorkspace: (workspaceId: string) =>
     request<void>(`/api/workspaces/${workspaceId}`, { method: "DELETE" }),
+  listMembers: (workspaceId: string) => request<WorkspaceMember[]>(`/api/workspaces/${workspaceId}/members`),
+  listMemberCandidates: (workspaceId: string) => request<User[]>(`/api/workspaces/${workspaceId}/member-candidates`),
+  addMember: (workspaceId: string, userId: string, role: WorkspaceRole) => request<WorkspaceMember>(`/api/workspaces/${workspaceId}/members`, { method: "POST", body: JSON.stringify({ user_id: userId, role }) }),
+  updateMember: (workspaceId: string, userId: string, role: WorkspaceRole) => request<WorkspaceMember>(`/api/workspaces/${workspaceId}/members/${userId}`, { method: "PUT", body: JSON.stringify({ role }) }),
+  removeMember: (workspaceId: string, userId: string) => request<void>(`/api/workspaces/${workspaceId}/members/${userId}`, { method: "DELETE" }),
   listDatasets: (workspaceId: string) => request<Dataset[]>(`/api/workspaces/${workspaceId}/datasets`),
   createDataset: (workspaceId: string, body: { name: string; description: string; icon: string }) => request<Dataset>(`/api/workspaces/${workspaceId}/datasets`, { method: "POST", body: JSON.stringify(body) }),
   deleteDataset: (datasetId: string) => request<void>(`/api/datasets/${datasetId}`, { method: "DELETE" }),
@@ -67,6 +120,7 @@ export const api = {
     request<ProviderConfig>(`/api/workspaces/${workspaceId}/model-provider-configs/${configId}`, {
       method: "PUT", body: JSON.stringify(body)
     }),
+  deleteProvider: (workspaceId: string, configId: string) => request<void>(`/api/workspaces/${workspaceId}/model-provider-configs/${configId}`, { method: "DELETE" }),
   listPlugins: (workspaceId: string) =>
     request<PluginCatalogItem[]>(`/api/workspaces/${workspaceId}/plugins`),
   daemonStatus: () => request<{ available: boolean }>("/api/dify-plugin-daemon/status"),
@@ -82,7 +136,7 @@ export const api = {
       method: "POST", body: JSON.stringify({ identifier })
     }),
   uploadDifyPlugin: async (workspaceId: string, file: File) => {
-    const response = await fetch(`/api/workspaces/${workspaceId}/dify-plugins/upload`, {
+    const response = await authenticatedFetch(`/api/workspaces/${workspaceId}/dify-plugins/upload`, {
       method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file
     });
     if (!response.ok) {
@@ -100,7 +154,7 @@ export const api = {
       method: "PUT", body: JSON.stringify({ enabled })
     }),
   uninstallPlugin: (workspaceId: string, pluginId: string) =>
-    fetch(`/api/workspaces/${workspaceId}/plugins/${pluginId}`, { method: "DELETE" }).then((response) => {
+    authenticatedFetch(`/api/workspaces/${workspaceId}/plugins/${pluginId}`, { method: "DELETE" }).then((response) => {
       if (!response.ok) throw new Error(`卸载失败：${response.status}`);
     }),
   getWorkflow: (appId: string) =>
@@ -131,7 +185,7 @@ export const api = {
   createApiKey: (appId: string, name: string) => request<ServiceApiKey>(`/api/apps/${appId}/api-keys`, { method: "POST", body: JSON.stringify({ name }) }),
   deleteApiKey: (appId: string, keyId: string) => request<void>(`/api/apps/${appId}/api-keys/${keyId}`, { method: "DELETE" }),
   async streamRun(appId: string, input: string, onEvent: (event: RunEvent) => void) {
-    const response = await fetch(`/api/apps/${appId}/runs/stream`, {
+    const response = await authenticatedFetch(`/api/apps/${appId}/runs/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ input })
@@ -157,7 +211,7 @@ export const api = {
     }
   },
   async streamWorkflow(appId: string, input: string | Record<string, unknown>, onEvent: (event: WorkflowEvent) => void) {
-    const response = await fetch(`/api/apps/${appId}/workflow-runs/stream`, {
+    const response = await authenticatedFetch(`/api/apps/${appId}/workflow-runs/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(typeof input === "string" ? { input } : { inputs: input })
@@ -179,7 +233,7 @@ export const api = {
     }
   },
   async streamWorkflowNode(appId: string, nodeId: string, input: string | Record<string, unknown>, onEvent: (event: WorkflowEvent) => void) {
-    const response = await fetch(`/api/apps/${appId}/workflow-nodes/${nodeId}/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(typeof input === "string" ? { input } : { inputs: input }) });
+    const response = await authenticatedFetch(`/api/apps/${appId}/workflow-nodes/${nodeId}/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(typeof input === "string" ? { input } : { inputs: input }) });
     if (!response.ok || !response.body) throw new Error(`节点运行失败：${response.status}`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
     while (true) { const { value, done } = await reader.read(); buffer += decoder.decode(value, { stream: !done }); const blocks = buffer.split("\n\n"); buffer = blocks.pop() ?? ""; for (const block of blocks) { const data = block.split("\n").find((line) => line.startsWith("data: "))?.slice(6); if (data) onEvent(JSON.parse(data) as WorkflowEvent); } if (done) break; }

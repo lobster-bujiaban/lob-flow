@@ -30,6 +30,10 @@ class NotFoundError(LookupError):
     pass
 
 
+class ResourceInUseError(RuntimeError):
+    pass
+
+
 def now() -> datetime:
     return datetime.now(UTC)
 
@@ -40,11 +44,17 @@ class FlowService:
         self.cipher = CredentialCipher.from_env()
         self.model_gateway = ModelGateway(database, self.cipher)
 
-    def list_workspaces(self) -> list[Workspace]:
+    def list_workspaces(self, user_id: str | None = None) -> list[Workspace]:
         with self.database.connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM workspaces ORDER BY created_at"
-            ).fetchall()
+            if user_id:
+                rows = connection.execute(
+                    """SELECT workspaces.* FROM workspaces
+                       JOIN workspace_members ON workspace_members.workspace_id = workspaces.id
+                       WHERE workspace_members.user_id = %s ORDER BY workspaces.created_at""",
+                    (user_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute("SELECT * FROM workspaces ORDER BY created_at").fetchall()
         return [Workspace(**dict(row)) for row in rows]
 
     def create_workspace(self, request: WorkspaceCreate) -> Workspace:
@@ -236,6 +246,42 @@ class FlowService:
         if row is None:
             raise NotFoundError(f"Model provider config {config_id} not found")
         return ModelProviderSecret(api_key=self.cipher.decrypt(row["api_key_encrypted"]))
+
+    def delete_model_provider_config(self, workspace_id: str, config_id: str) -> None:
+        self.get_model_provider_config(workspace_id, config_id)
+        with self.database.connect() as connection:
+            app_rows = connection.execute(
+                "SELECT name, draft_json FROM apps WHERE workspace_id = %s",
+                (workspace_id,),
+            ).fetchall()
+            workflow_rows = connection.execute(
+                """SELECT apps.name, workflow_drafts.definition_json
+                   FROM workflow_drafts JOIN apps ON apps.id = workflow_drafts.app_id
+                   WHERE apps.workspace_id = %s""",
+                (workspace_id,),
+            ).fetchall()
+            version_rows = connection.execute(
+                """SELECT apps.name, workflow_versions.definition_json
+                   FROM workflow_versions JOIN apps ON apps.id = workflow_versions.app_id
+                   WHERE apps.workspace_id = %s""",
+                (workspace_id,),
+            ).fetchall()
+            references: set[str] = set()
+            for row in app_rows:
+                draft = json.loads(row["draft_json"])
+                if str(draft.get("model", {}).get("provider_config_id") or "") == config_id:
+                    references.add(str(row["name"]))
+            for row in [*workflow_rows, *version_rows]:
+                definition = json.loads(row["definition_json"])
+                if any(str(node.get("config", {}).get("provider_config_id") or "") == config_id for node in definition.get("nodes", [])):
+                    references.add(str(row["name"]))
+            if references:
+                names = "、".join(sorted(references)[:5])
+                raise ResourceInUseError(f"模型配置正在被应用使用：{names}。请先切换这些应用的模型配置。")
+            connection.execute(
+                "DELETE FROM model_provider_configs WHERE id = %s AND workspace_id = %s",
+                (config_id, workspace_id),
+            )
 
     def update_model_provider_config(
         self,

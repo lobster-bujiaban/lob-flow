@@ -1,6 +1,6 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import type { App as FlowApp, AppType, DraftDefinition, NodeRun, ProviderConfig, ServiceApiKey, StartInputVariable, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowRun, Workspace } from "./types";
+import type { App as FlowApp, AppType, DraftDefinition, NodeRun, ProviderConfig, ServiceApiKey, StartInputVariable, User, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowRun, Workspace, WorkspaceMember, WorkspaceRole } from "./types";
 import lobsterLogo from "./assets/lobster-logo.png";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { PluginMarketplace } from "./PluginMarketplace";
@@ -33,6 +33,14 @@ const providerPresets = [
 ] as const;
 
 export function App() {
+  const [signedIn, setSignedIn] = useState(api.hasSession());
+  useEffect(() => {
+    if (signedIn && new URLSearchParams(window.location.search).has("invite")) window.history.replaceState({}, "", "/");
+  }, [signedIn]);
+  return signedIn ? <MainApp signedOut={() => setSignedIn(false)} /> : <LoginPage signedIn={() => setSignedIn(true)} />;
+}
+
+function MainApp({ signedOut }: { signedOut: () => void }) {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspaceId, setWorkspaceId] = useState("");
   const [apps, setApps] = useState<FlowApp[]>([]);
@@ -48,16 +56,21 @@ export function App() {
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
   const [showDeleteWorkspace, setShowDeleteWorkspace] = useState(false);
   const [importTarget, setImportTarget] = useState<FlowApp | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [showMembers, setShowMembers] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
 
   const activeApp = useMemo(() => apps.find((item) => item.id === appId), [apps, appId]);
   const visibleApps = useMemo(() => appFilter === "all" ? apps : apps.filter((item) => item.app_type === appFilter), [apps, appFilter]);
 
   useEffect(() => {
-    api.listWorkspaces().then((items) => {
+    Promise.all([api.currentUser(), api.listWorkspaces()]).then(([user, items]) => {
+      setCurrentUser(user);
       setWorkspaces(items);
       if (items[0]) setWorkspaceId(items[0].id);
-    }).catch(showError);
+    }).catch((reason) => { api.clearSession(); signedOut(); showError(reason); });
   }, []);
 
   useEffect(() => {
@@ -198,9 +211,9 @@ export function App() {
   return (
     <div className="dify-shell">
       <header className="global-header">
-        <div className="global-brand"><img src={lobsterLogo} alt="LOB" /><strong>LOB Flow</strong><span>/</span><div className="workspace-picker"><button className="workspace-picker-trigger" onClick={() => setWorkspaceMenuOpen((open) => !open)}><span>{workspaces.find((item) => item.id === workspaceId)?.name ?? "选择空间"}</span><i>⌄</i></button>{workspaceMenuOpen && <div className="workspace-menu"><small>空间</small>{workspaces.map((workspace) => <button key={workspace.id} className={workspace.id === workspaceId ? "active" : ""} onClick={() => { setWorkspaceId(workspace.id); setTab("studio"); setWorkspaceMenuOpen(false); }}><i>{workspace.name.slice(0, 1).toUpperCase()}</i><span>{workspace.name}</span>{workspace.id === workspaceId && <b>✓</b>}</button>)}<div className="workspace-menu-actions"><button onClick={() => { setShowCreateWorkspace(true); setWorkspaceMenuOpen(false); }}>＋ 新建空间</button><button className="danger" disabled={!workspaceId} onClick={() => { setShowDeleteWorkspace(true); setWorkspaceMenuOpen(false); }}>删除当前空间</button></div></div>}</div></div>
+        <div className="global-brand"><img src={lobsterLogo} alt="LOB" /><strong>LOB Flow</strong><span>/</span><div className="workspace-picker"><button className="workspace-picker-trigger" onClick={() => setWorkspaceMenuOpen((open) => !open)}><span>{workspaces.find((item) => item.id === workspaceId)?.name ?? "选择空间"}</span><i>⌄</i></button>{workspaceMenuOpen && <div className="workspace-menu"><small>空间</small>{workspaces.map((workspace) => <button key={workspace.id} className={workspace.id === workspaceId ? "active" : ""} onClick={() => { setWorkspaceId(workspace.id); setTab("studio"); setWorkspaceMenuOpen(false); }}><i>{workspace.name.slice(0, 1).toUpperCase()}</i><span>{workspace.name}</span>{workspace.id === workspaceId && <b>✓</b>}</button>)}<div className="workspace-menu-actions"><button onClick={() => { setShowCreateWorkspace(true); setWorkspaceMenuOpen(false); }}>＋ 新建空间</button>{currentUser?.is_super_admin && <button disabled={!workspaceId} onClick={() => { setShowMembers(true); setWorkspaceMenuOpen(false); }}>空间成员</button>}<button className="danger" disabled={!workspaceId} onClick={() => { setShowDeleteWorkspace(true); setWorkspaceMenuOpen(false); }}>删除当前空间</button></div></div>}</div></div>
         <nav className="global-nav"><button className={tab === "studio" ? "active" : ""} onClick={() => setTab("studio")}>▦ 工作室</button><button className={tab === "knowledge" ? "active" : ""} onClick={() => setTab("knowledge")}>▤ 知识库</button><button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>T 工具</button></nav>
-        <div className="global-actions"><button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>◈ 插件</button><button className="user-avatar-top">LOB</button></div>
+        <div className="global-actions"><button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>◈ 插件</button><div className="account-menu-wrap"><button className="user-avatar-top" aria-label="打开账户菜单" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}>{currentUser?.name.slice(0, 3).toUpperCase() ?? "LOB"}</button>{accountMenuOpen && <div className={`account-menu ${currentUser?.is_super_admin ? "admin" : "compact"}`}><header><i>{currentUser?.name.slice(0, 1).toUpperCase()}</i><div><strong>{currentUser?.name}</strong><small>{currentUser?.email}</small><span>{currentUser?.is_super_admin ? "平台超级管理员" : "生产账户"}</span></div></header>{currentUser?.is_super_admin && <nav><button onClick={() => { setShowAdmin(true); setAccountMenuOpen(false); }}><i>♙</i><span>平台用户</span><b>›</b></button><button disabled={!workspaceId} onClick={() => { setShowMembers(true); setAccountMenuOpen(false); }}><i>◇</i><span>空间成员</span><b>›</b></button></nav>}<button className="logout" onClick={async () => { await api.logout(); signedOut(); }}><i>↪</i><span>退出登录</span></button></div>}</div></div>
       </header>
       <main className="main">
         {activeApp && ["chat", "workflow", "api", "logs", "settings"].includes(tab) && <header className="app-header"><button className="app-back" onClick={() => setTab("studio")}>←</button><div className="app-header-title"><span>{appTypes.find((type) => type.id === activeApp.app_type)?.icon}</span><div><strong>{activeApp.name}</strong><small>{appTypes.find((type) => type.id === activeApp.app_type)?.label}</small></div></div><nav><button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button><button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button><button className={tab === "api" ? "active" : ""} onClick={() => setTab("api")}>访问 API</button><button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>日志</button><button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button></nav></header>}
@@ -227,11 +240,93 @@ export function App() {
       <input ref={importRef} className="file-input" type="file" accept=".json,.lobflow.json,application/json" onChange={importDsl} />
       {showCreateWorkspace && <div className="modal-backdrop" onClick={() => setShowCreateWorkspace(false)}><form className="modal workspace-create-modal" onSubmit={createWorkspace} onClick={(event) => event.stopPropagation()}><div className="modal-head"><div><h3>新建空间</h3><p>空间用于隔离应用、知识库、插件和运行记录。</p></div><button type="button" onClick={() => setShowCreateWorkspace(false)}>×</button></div><label>空间名称</label><input name="name" required autoFocus maxLength={100} placeholder="例如：产品研发团队" /><div className="workspace-modal-actions"><button type="button" onClick={() => setShowCreateWorkspace(false)}>取消</button><button className="primary">创建空间</button></div></form></div>}
       {showDeleteWorkspace && <div className="modal-backdrop" onClick={() => setShowDeleteWorkspace(false)}><div className="modal confirm-modal workspace-delete-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon">!</div><h3>删除空间“{workspaces.find((item) => item.id === workspaceId)?.name}”？</h3><p>空间内的应用、工作流、运行记录和插件配置都会永久删除。此操作无法撤销。</p><div className="confirm-actions"><button onClick={() => setShowDeleteWorkspace(false)}>取消</button><button className="confirm-delete" onClick={deleteWorkspace}>确认删除</button></div></div></div>}
+      {showMembers && currentUser?.is_super_admin && <WorkspaceMembersModal workspaceId={workspaceId} workspaces={workspaces} currentUser={currentUser} close={() => setShowMembers(false)} onError={showError} />}
+      {showAdmin && currentUser?.is_super_admin && <PlatformAdminModal currentUser={currentUser} close={() => setShowAdmin(false)} onError={showError} />}
       {showCreateApp && <div className="modal-backdrop"><form className="modal app-create-modal" onSubmit={submitCreateApp}><div className="modal-head"><div><h3>创建应用</h3><p>应用类型决定默认运行方式，创建后仍可使用工作流编排。</p></div><button type="button" onClick={() => setShowCreateApp(false)}>×</button></div><label>应用名称</label><input name="name" required autoFocus placeholder="例如：客户支持 Agent" /><label>应用类型</label><div className="app-type-options">{appTypes.map((type, index) => <label key={type.id}><input type="radio" name="app_type" value={type.id} defaultChecked={index === 1} /><span><i>{type.icon}</i><strong>{type.label}</strong><small>{type.description}</small></span></label>)}</div><button className="primary wide">创建应用</button></form></div>}
       {editingApp && <div className="modal-backdrop"><form className="modal" onSubmit={submitEditApp}><div className="modal-head"><div><h3>编辑应用信息</h3><p>修改名称、描述和应用分类。</p></div><button type="button" onClick={() => setEditingApp(null)}>×</button></div><label>应用名称</label><input name="name" defaultValue={editingApp.name} required /><label>应用类型</label><select name="app_type" defaultValue={editingApp.app_type}>{appTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}</select><label>应用描述</label><textarea name="description" rows={4} defaultValue={editingApp.description} /><button className="primary wide">保存修改</button></form></div>}
       {deleteTarget && <div className="modal-backdrop"><div className="modal confirm-modal"><div className="confirm-icon">!</div><h3>删除应用“{deleteTarget.name}”？</h3><p>相关工作流、运行记录和事件都会永久删除，此操作无法撤销。</p><div className="confirm-actions"><button onClick={() => setDeleteTarget(null)}>取消</button><button className="confirm-delete" onClick={() => deleteApp(deleteTarget)}>确认删除</button></div></div></div>}
     </div>
   );
+}
+
+function LoginPage({ signedIn }: { signedIn: () => void }) {
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const inviteToken = new URLSearchParams(window.location.search).get("invite") ?? "";
+  const [mode, setMode] = useState<"loading" | "login" | "initialize" | "invite">("loading");
+  const [invite, setInvite] = useState<{ email: string; name: string } | null>(null);
+  useEffect(() => {
+    if (inviteToken) api.invitationInfo(inviteToken).then((item) => { setInvite(item); setMode("invite"); }).catch((reason) => { window.history.replaceState({}, "", "/"); setError(reason instanceof Error ? reason.message : String(reason)); setMode("login"); });
+    else api.setupStatus().then((item) => setMode(item.initialized ? "login" : "initialize")).catch(() => { setError("无法读取系统初始化状态"); setMode("login"); });
+  }, []);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form = new FormData(event.currentTarget); setBusy(true); setError("");
+    try {
+      if (mode === "initialize") await api.initialize(String(form.get("name") ?? ""), String(form.get("email") ?? ""), String(form.get("password") ?? ""));
+      else if (mode === "invite") { await api.acceptInvitation(inviteToken, String(form.get("name") ?? ""), String(form.get("password") ?? "")); window.history.replaceState({}, "", "/"); }
+      else await api.login(String(form.get("email") ?? ""), String(form.get("password") ?? ""));
+      signedIn();
+    }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { setBusy(false); }
+  }
+  if (mode === "loading") return <main className="login-page"><div className="login-card">正在加载…</div></main>;
+  const registering = mode !== "login";
+  return <main className="login-page"><form className="login-card" onSubmit={submit}><img src={lobsterLogo} alt="LOB Flow" /><h1>{mode === "initialize" ? "初始化平台超管" : mode === "invite" ? "接受账户邀请" : "登录 LOB Flow"}</h1><p>{mode === "initialize" ? "首位用户将自动成为平台超级管理员。" : mode === "invite" ? `受邀邮箱：${invite?.email ?? ""}` : "使用平台管理员分配的生产账户登录。"}</p>{error && <div className="login-error">{error}</div>}{registering && <><label>姓名</label><input name="name" defaultValue={invite?.name ?? ""} required autoFocus /></>}<label>邮箱</label><input name="email" type="email" defaultValue={invite?.email ?? ""} readOnly={mode === "invite"} autoComplete="username" required autoFocus={!registering} /><label>密码</label><input name="password" type="password" minLength={mode === "login" ? undefined : 8} autoComplete={registering ? "new-password" : "current-password"} required /><button className="primary wide" disabled={busy}>{busy ? "提交中…" : registering ? "完成注册" : "登录"}</button>{mode === "login" && <small>系统不开放自主注册，请使用超管发送的邀请链接。</small>}</form></main>;
+}
+
+function PlatformAdminModal({ currentUser, close, onError }: { currentUser: User; close: () => void; onError: (reason: unknown) => void }) {
+  const [users, setUsers] = useState<User[]>([]);
+  const [inviteLink, setInviteLink] = useState("");
+  const load = () => api.listPlatformUsers().then(setUsers).catch(onError);
+  useEffect(() => { void load(); }, []);
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); const form = new FormData(event.currentTarget);
+    try { const item = await api.createInvitation({ name: String(form.get("name")), email: String(form.get("email")), is_super_admin: form.get("is_super_admin") === "on" }); setInviteLink(`${window.location.origin}/?invite=${encodeURIComponent(item.invite_token ?? "")}`); event.currentTarget.reset(); } catch (reason) { onError(reason); }
+  }
+  async function update(user: User, body: { is_super_admin?: boolean; status?: "active" | "disabled" }) { try { await api.updatePlatformUser(user.id, body); await load(); } catch (reason) { onError(reason); } }
+  return <div className="modal-backdrop" onClick={close}><div className="modal platform-admin-modal" onClick={(event) => event.stopPropagation()}><div className="modal-head"><div><h3>平台用户</h3><p>管理生产账户、平台角色和登录状态。</p></div><button aria-label="关闭" onClick={close}>×</button></div><div className="admin-user-list">{users.map((user) => <div key={user.id}><div className="admin-user-identity"><strong>{user.name}{user.id === currentUser.id ? "（你）" : ""}</strong><small>{user.email}</small></div><span className={`account-status ${user.status}`}>{user.status === "active" ? "正常" : "已停用"}</span><label className="admin-role-switch"><input type="checkbox" checked={user.is_super_admin} disabled={user.id === currentUser.id} onChange={(event) => update(user, { is_super_admin: event.target.checked })} /><i aria-hidden="true" /><span>超级管理员</span></label><button className="account-state-action" disabled={user.id === currentUser.id} onClick={() => update(user, { status: user.status === "active" ? "disabled" : "active" })}>{user.status === "active" ? "停用" : "启用"}</button></div>)}</div>{inviteLink && <div className="api-key-once"><strong>邀请链接仅显示一次，3 天内有效</strong><code>{inviteLink}</code><button onClick={() => navigator.clipboard.writeText(inviteLink)}>复制</button></div>}<form className="admin-user-create" onSubmit={create}><h4>邀请用户注册</h4><label><span>姓名</span><input name="name" placeholder="可选" /></label><label><span>受邀邮箱</span><input name="email" type="email" placeholder="name@example.com" required /></label><label className="invite-admin-option"><input name="is_super_admin" type="checkbox" /><i aria-hidden="true" /><span>设为平台超级管理员</span></label><button className="primary">生成邀请链接</button></form></div></div>;
+}
+
+function WorkspaceMembersModal({ workspaceId, workspaces, currentUser, close, onError }: { workspaceId: string; workspaces: Workspace[]; currentUser: User; close: () => void; onError: (reason: unknown) => void }) {
+  const [members, setMembers] = useState<WorkspaceMember[]>([]);
+  const [workspaceMemberships, setWorkspaceMemberships] = useState<Record<string, WorkspaceMember[]>>({});
+  const [candidates, setCandidates] = useState<User[]>([]);
+  const [userId, setUserId] = useState("");
+  const [role, setRole] = useState<WorkspaceRole>("viewer");
+  const [workspaceIds, setWorkspaceIds] = useState<string[]>([workspaceId]);
+  const load = async () => {
+    try {
+      const results = await Promise.all(workspaces.map(async (workspace) => [workspace.id, await api.listMembers(workspace.id)] as const));
+      const membershipMap = Object.fromEntries(results);
+      setWorkspaceMemberships(membershipMap);
+      setMembers(membershipMap[workspaceId] ?? []);
+    } catch (reason) { onError(reason); }
+  };
+  useEffect(() => { void load(); }, [workspaceId, workspaces.length]);
+  const mine = members.find((item) => item.user_id === currentUser.id);
+  const canManage = currentUser.is_super_admin || mine?.role === "owner" || mine?.role === "admin";
+  const canManageOwners = currentUser.is_super_admin || mine?.role === "owner";
+  useEffect(() => { if (canManage) api.listMemberCandidates(workspaceId).then(setCandidates).catch(onError); else setCandidates([]); }, [workspaceId, canManage, members.length]);
+  async function add(event: FormEvent) {
+    event.preventDefault();
+    try { await Promise.all(workspaceIds.map((targetId) => api.addMember(targetId, userId, role))); setUserId(""); await load(); } catch (reason) { onError(reason); }
+  }
+  async function change(item: WorkspaceMember, nextRole: WorkspaceRole) {
+    try { await api.updateMember(workspaceId, item.user_id, nextRole); await load(); } catch (reason) { onError(reason); }
+  }
+  async function remove(item: WorkspaceMember) {
+    if (!confirm(`移除成员“${item.name}”？`)) return;
+    try { await api.removeMember(workspaceId, item.user_id); await load(); } catch (reason) { onError(reason); }
+  }
+  const roles: Array<{ id: WorkspaceRole; label: string; summary: string; permissions: string[] }> = [
+    { id: "viewer", label: "Viewer", summary: "查看与审阅", permissions: ["查看应用、工作流和版本", "查看知识库与运行日志", "不可调试、编辑或发布"] },
+    { id: "editor", label: "Editor", summary: "内容开发", permissions: ["包含 Viewer 全部权限", "创建、编辑、调试和发布应用", "管理知识库文档与检索配置"] },
+    { id: "admin", label: "Admin", summary: "资源管理", permissions: ["包含 Editor 全部权限", "管理模型凭据、插件和 API Key", "不可管理平台用户或空间成员"] },
+    { id: "owner", label: "Owner", summary: "空间控制", permissions: ["包含 Admin 全部权限", "管理 Workspace 配置", "删除整个 Workspace"] },
+  ];
+  const ownerCount = members.filter((item) => item.role === "owner").length;
+  return <div className="modal-backdrop" onClick={close}><div className="modal members-modal" onClick={(event) => event.stopPropagation()}><div className="modal-head"><div><h3>空间成员</h3><p>查看每位成员拥有权限的工作区，并管理当前空间角色。</p></div><button aria-label="关闭" onClick={close}>×</button></div>{currentUser.is_super_admin && <div className="platform-override-note"><strong>平台超管权限</strong><span>你可以管理所有工作区及其 Owner。</span></div>}<section className="role-matrix"><h4>角色权限说明</h4><div>{roles.map((item) => <article key={item.id}><header><strong>{item.label}</strong><span>{item.summary}</span></header>{item.permissions.map((permission) => <p key={permission}>✓ {permission}</p>)}</article>)}</div></section><section className="workspace-member-section"><header><div><h4>当前空间成员</h4><small>成员名下的所有工作区权限会显示在每行下方</small></div><span>{members.length} 人</span></header><div className="member-list">{members.map((item) => { const lastOwner = item.role === "owner" && ownerCount === 1; const access = workspaces.flatMap((workspace) => (workspaceMemberships[workspace.id] ?? []).filter((membership) => membership.user_id === item.user_id).map((membership) => ({ workspace, role: membership.role }))); return <div className="member-row" key={item.user_id}><i>{item.name.slice(0, 1).toUpperCase()}</i><div className="member-identity"><strong>{item.name}{item.user_id === currentUser.id ? "（你）" : ""}</strong><small>{item.email}</small><div className="member-workspace-access">{access.map(({ workspace, role: accessRole }) => <span key={workspace.id} className={workspace.id === workspaceId ? "current" : ""}><b>{workspace.name}</b><em>{accessRole}</em></span>)}</div></div><label className="current-space-role"><span>当前空间角色</span>{canManage ? <select value={item.role} title={lastOwner ? "空间必须保留至少一名 Owner" : "修改空间角色"} disabled={item.role === "owner" && (!canManageOwners || lastOwner)} onChange={(event) => change(item, event.target.value as WorkspaceRole)}><option value="viewer">Viewer · 只读</option><option value="editor">Editor · 编辑</option><option value="admin">Admin · 管理</option>{canManageOwners && <option value="owner">Owner · 所有者</option>}</select> : <span className={`member-role ${item.role}`}>{item.role}</span>}</label>{canManage && item.user_id !== currentUser.id && !lastOwner && <button className="member-remove" onClick={() => remove(item)}>移除</button>}</div>; })}</div></section>{canManage && <form className="member-add" onSubmit={add}><div className="member-add-heading"><div><h4>添加成员</h4><p>选择账户、角色和需要加入的工作区。</p></div><span>可多选工作区</span></div><div className="member-add-fields"><label><span>1　选择生产账户</span><select value={userId} onChange={(event) => setUserId(event.target.value)} required><option value="">请选择账户</option>{candidates.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.email}</option>)}</select></label><label><span>2　设置空间角色</span><select value={role} onChange={(event) => setRole(event.target.value as WorkspaceRole)}><option value="viewer">Viewer · 只读</option><option value="editor">Editor · 内容开发</option><option value="admin">Admin · 空间管理</option>{canManageOwners && <option value="owner">Owner · 完全控制</option>}</select></label></div><fieldset className="workspace-multi-select"><legend>3　选择 Workspace</legend>{workspaces.map((item) => <label key={item.id} className={workspaceIds.includes(item.id) ? "selected" : ""}><input type="checkbox" checked={workspaceIds.includes(item.id)} onChange={(event) => setWorkspaceIds((values) => event.target.checked ? [...values, item.id] : values.filter((id) => id !== item.id))} /><i>{item.name.slice(0, 1).toUpperCase()}</i><span>{item.name}{item.id === workspaceId && <small>当前</small>}</span></label>)}</fieldset><div className="member-add-actions"><small>已选择 {workspaceIds.length} 个工作区，将应用相同角色</small><button className="primary" disabled={!userId || !workspaceIds.length}>添加成员</button></div>{!candidates.length && <p>暂无可添加账户，请先由平台超管邀请用户注册。</p>}</form>}</div></div>;
 }
 
 function ApiAccessPanel({ app, onError }: { app: FlowApp; onError: (reason: unknown) => void }) {
@@ -423,6 +518,15 @@ function SettingsPanel(props: {
     catch (reason) { onError(`现有密钥读取失败，仍可输入新密钥后保存：${reason instanceof Error ? reason.message : String(reason)}`); }
   }
 
+  async function deleteProvider(item: ProviderConfig) {
+    if (!window.confirm(`删除模型配置“${item.name}”？保存的 API Key 将一并删除，此操作无法撤销。`)) return;
+    try {
+      await api.deleteProvider(workspaceId, item.id);
+      setProviders(providers.filter((provider) => provider.id !== item.id));
+      if (editingProvider?.id === item.id) { setShowCredential(false); setEditingProvider(null); }
+    } catch (reason) { onError(reason); }
+  }
+
   async function saveCredential(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
@@ -463,7 +567,7 @@ function SettingsPanel(props: {
     </div>
     <aside className="provider-panel">
       <div className="panel-title compact"><div><h3>模型供应商</h3><p>API Key 加密保存</p></div><button className="icon-button" onClick={openNewProvider}>＋</button></div>
-      {providers.map((item) => <button className="provider-item provider-edit" key={item.id} onClick={() => openProvider(item)}><div className="provider-logo">AI</div><div><strong>{item.name}</strong><span>{item.base_url}</span></div><span className="secure">编辑 ›</span></button>)}
+      {providers.map((item) => <div className="provider-item provider-edit" key={item.id}><div className="provider-logo">AI</div><button className="provider-item-main" onClick={() => openProvider(item)}><strong>{item.name}</strong><span>{item.base_url}</span></button><div className="provider-item-actions"><button onClick={() => openProvider(item)}>编辑</button><button className="delete" onClick={() => deleteProvider(item)}>删除</button></div></div>)}
       {!providers.length && <div className="empty-provider">尚未配置真实模型</div>}
     </aside>
     {showCredential && <div className="modal-backdrop"><form className="modal provider-modal" onSubmit={saveCredential}><div className="modal-head"><div><h3>{editingProvider ? "API 密钥授权配置" : "添加模型配置"}</h3><p>{editingProvider ? "修改凭据后，当前空间中的应用会继续使用此配置。" : "选择常见厂商或填写任意 OpenAI-compatible API"}</p></div><button type="button" onClick={() => setShowCredential(false)}>×</button></div><label>模型厂商</label><div className="provider-presets">{providerPresets.map((preset) => <button type="button" key={preset.id} className={providerPreset === preset.id ? "active" : ""} onClick={() => applyProviderPreset(preset.id)}><i>{preset.icon}</i><span>{preset.label}</span></button>)}</div><label>配置名称</label><input value={credentialName} onChange={(event) => setCredentialName(event.target.value)} placeholder="例如：OpenAI" required /><label>API Key</label><div className="secret-input"><input value={credentialKey} onChange={(event) => setCredentialKey(event.target.value)} type={showCredentialKey ? "text" : "password"} autoComplete="off" placeholder={editingProvider ? "正在解密…" : providerPreset === "ollama" ? "Ollama 可填写任意非空值" : "输入 API Key"} required /><button type="button" onClick={() => setShowCredentialKey((visible) => !visible)}>{showCredentialKey ? "隐藏" : "显示"}</button></div><label>Base URL</label><input value={credentialBaseUrl} onChange={(event) => { setCredentialBaseUrl(event.target.value); setProviderPreset(""); }} required /><label>模型名称</label><input value={credentialModel} onChange={(event) => setCredentialModel(event.target.value)} required /><div className="security-note">🔒 密钥仅在你主动编辑时解密显示，提交后仍以加密形式保存。</div><button className="primary wide">{editingProvider ? "保存修改" : "保存配置"}</button></form></div>}

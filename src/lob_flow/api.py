@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import psycopg
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 
 from lob_flow.database import Database
+from lob_flow.auth_service import AuthService, AuthenticationError, PermissionDeniedError
 from lob_flow.dify_daemon import DifyDaemonClient, DifyDaemonError
 from lob_flow.dify_marketplace import DifyMarketplaceClient
 from lob_flow.knowledge_service import KnowledgeService
@@ -48,19 +50,23 @@ from lob_flow.models import (
     PluginRuntimeState,
     Workspace,
     WorkspaceCreate,
+    AccountInvitation, AccountInvitationAccept, AccountInvitationCreate, AdminUserUpdate, AuthSession, InitialAdminRegister, User, UserLogin, WorkspaceMember, WorkspaceMemberCreate, WorkspaceMemberUpdate,
     Dataset, DatasetCreate, DatasetDocument, DocumentCreate, DocumentSegment,
     EnableRequest, RetrievalRequest, RetrievalResponse, SegmentUpdate,
 )
 from lob_flow.plugin_service import PluginService
-from lob_flow.service import FlowService, NotFoundError
+from lob_flow.service import FlowService, NotFoundError, ResourceInUseError
 from lob_flow.workflow import WorkflowValidationError
 from lob_flow.workflow_service import WorkflowService
 from lob_flow.schedule_service import ScheduleService, ScheduleWorker
+
+logger = logging.getLogger(__name__)
 
 
 def create_app(database: Database | None = None) -> FastAPI:
     database = database or Database.from_env()
     service = FlowService(database)
+    auth_service = AuthService(database)
     workflow_service = WorkflowService(database, service.model_gateway)
     knowledge_service = KnowledgeService(database)
     plugin_service = PluginService(database, service.cipher)
@@ -76,8 +82,10 @@ def create_app(database: Database | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         database.initialize()
-        plugin_service.ensure_catalog()
-        workflow_service.migrate_inline_credentials()
+        try:
+            workflow_service.recover_interrupted_runs()
+        except psycopg.OperationalError:
+            logger.warning("PostgreSQL unavailable during interrupted-run recovery; deferring until next startup", exc_info=True)
         schedule_worker.start()
         try:
             yield
@@ -94,9 +102,43 @@ def create_app(database: Database | None = None) -> FastAPI:
     )
     application.state.service = service
 
+    @application.middleware("http")
+    async def management_auth(request: Request, call_next):
+        path = request.url.path
+        public = path in {"/api/auth/login", "/api/auth/setup-status", "/api/auth/initialize", "/api/auth/invitations/accept"} or path.startswith("/api/auth/invitations/") or path.startswith("/api/dify-marketplace/icons/")
+        if not path.startswith("/api/") or public:
+            return await call_next(request)
+        try:
+            user = auth_service.authenticate(request.headers.get("Authorization", ""))
+            request.state.user = user
+            workspace_id = auth_service.resolve_workspace(path)
+            if workspace_id:
+                minimum = "viewer" if request.method == "GET" else "editor"
+                sensitive = (
+                    "model-provider-configs", "/plugins/", "dify-plugins", "dify-marketplace/install",
+                    "plugin-credentials", "plugin-runtime-states", "api-keys", "/members", "member-candidates",
+                )
+                admin_reads = ("plugin-credentials", "plugin-runtime-states", "api-keys", "member-candidates")
+                if any(marker in path for marker in sensitive) and (
+                    request.method != "GET" or any(marker in path for marker in admin_reads) or path.endswith("/secret")
+                ):
+                    minimum = "admin"
+                if request.method == "DELETE" and path == f"/api/workspaces/{workspace_id}":
+                    minimum = "owner"
+                request.state.workspace_role = auth_service.require(workspace_id, user.id, minimum)
+            return await call_next(request)
+        except AuthenticationError as exc:
+            return JSONResponse(status_code=401, content={"detail": str(exc)})
+        except PermissionDeniedError as exc:
+            return JSONResponse(status_code=403, content={"detail": str(exc)})
+
     @application.exception_handler(NotFoundError)
     async def not_found_handler(_, exc: NotFoundError):
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @application.exception_handler(ResourceInUseError)
+    async def resource_in_use_handler(_, exc: ResourceInUseError):
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @application.exception_handler(WorkflowValidationError)
     async def workflow_validation_handler(_, exc: WorkflowValidationError):
@@ -113,12 +155,68 @@ def create_app(database: Database | None = None) -> FastAPI:
     async def database_connection_handler(_, exc: psycopg.OperationalError):
         return JSONResponse(
             status_code=503,
-            content={"detail": "PostgreSQL 连接暂时中断，系统已自动重试，请稍后再次操作。"},
+            content={"detail": "PostgreSQL 连接暂时中断，多次重试后仍未恢复，请稍后再次操作。"},
         )
+
+    @application.exception_handler(PermissionDeniedError)
+    async def permission_denied_handler(_, exc: PermissionDeniedError):
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    @application.exception_handler(AuthenticationError)
+    async def authentication_error_handler(_, exc: AuthenticationError):
+        return JSONResponse(status_code=401, content={"detail": str(exc)})
 
     @application.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @application.post("/api/auth/login", response_model=AuthSession)
+    def login(request: UserLogin) -> AuthSession:
+        return auth_service.login(request)
+
+    @application.get("/api/auth/setup-status")
+    def setup_status() -> dict[str, bool]:
+        return {"initialized": auth_service.has_accounts()}
+
+    @application.post("/api/auth/initialize", response_model=AuthSession, status_code=201)
+    def initialize_first_admin(body: InitialAdminRegister) -> AuthSession:
+        return auth_service.initialize_first_admin(body)
+
+    @application.get("/api/auth/invitations/{token}", response_model=AccountInvitation)
+    def invitation_info(token: str) -> AccountInvitation:
+        return auth_service.get_invitation(token)
+
+    @application.post("/api/auth/invitations/accept", response_model=AuthSession, status_code=201)
+    def accept_invitation(body: AccountInvitationAccept) -> AuthSession:
+        return auth_service.accept_invitation(body)
+
+    @application.post("/api/auth/logout", status_code=204)
+    def logout(request: Request) -> Response:
+        auth_service.logout(request.headers.get("Authorization", ""))
+        return Response(status_code=204)
+
+    @application.get("/api/auth/me", response_model=User)
+    def current_user(request: Request) -> User:
+        return request.state.user
+
+    @application.get("/api/admin/users", response_model=list[User])
+    def list_platform_users(request: Request) -> list[User]:
+        _require_super_admin(request)
+        return auth_service.list_users()
+
+    @application.post("/api/admin/invitations", response_model=AccountInvitation, status_code=201)
+    def create_account_invitation(body: AccountInvitationCreate, request: Request) -> AccountInvitation:
+        _require_super_admin(request)
+        return auth_service.create_invitation(body, request.state.user.id)
+
+    @application.put("/api/admin/users/{user_id}", response_model=User)
+    def update_platform_user(user_id: str, body: AdminUserUpdate, request: Request) -> User:
+        _require_super_admin(request)
+        return auth_service.update_user(user_id, body, request.state.user.id)
+
+    def _require_super_admin(request: Request) -> None:
+        if not request.state.user.is_super_admin:
+            raise PermissionDeniedError("仅平台超级管理员可执行此操作")
 
     @application.get("/", include_in_schema=False, response_model=None)
     def index() -> FileResponse | RedirectResponse:
@@ -127,16 +225,44 @@ def create_app(database: Database | None = None) -> FastAPI:
         return RedirectResponse(url="/docs")
 
     @application.post("/api/workspaces", response_model=Workspace, status_code=201)
-    def create_workspace(request: WorkspaceCreate) -> Workspace:
-        return service.create_workspace(request)
+    def create_workspace(request: WorkspaceCreate, http_request: Request) -> Workspace:
+        workspace = service.create_workspace(request)
+        auth_service.add_owner(workspace.id, http_request.state.user.id)
+        return workspace
 
     @application.get("/api/workspaces", response_model=list[Workspace])
-    def list_workspaces() -> list[Workspace]:
-        return service.list_workspaces()
+    def list_workspaces(request: Request) -> list[Workspace]:
+        return service.list_workspaces(None if request.state.user.is_super_admin else request.state.user.id)
 
     @application.delete("/api/workspaces/{workspace_id}", status_code=204)
     def delete_workspace(workspace_id: str) -> None:
         service.delete_workspace(workspace_id)
+
+    @application.get("/api/workspaces/{workspace_id}/members", response_model=list[WorkspaceMember])
+    def list_workspace_members(workspace_id: str, request: Request) -> list[WorkspaceMember]:
+        _require_super_admin(request)
+        return auth_service.list_members(workspace_id)
+
+    @application.get("/api/workspaces/{workspace_id}/member-candidates", response_model=list[User])
+    def list_workspace_member_candidates(workspace_id: str, request: Request) -> list[User]:
+        _require_super_admin(request)
+        return auth_service.list_member_candidates(workspace_id)
+
+    @application.post("/api/workspaces/{workspace_id}/members", response_model=WorkspaceMember, status_code=201)
+    def add_workspace_member(workspace_id: str, body: WorkspaceMemberCreate, request: Request) -> WorkspaceMember:
+        _require_super_admin(request)
+        return auth_service.add_member(workspace_id, body)
+
+    @application.put("/api/workspaces/{workspace_id}/members/{user_id}", response_model=WorkspaceMember)
+    def update_workspace_member(workspace_id: str, user_id: str, body: WorkspaceMemberUpdate, request: Request) -> WorkspaceMember:
+        _require_super_admin(request)
+        return auth_service.update_member(workspace_id, user_id, body)
+
+    @application.delete("/api/workspaces/{workspace_id}/members/{user_id}", status_code=204)
+    def remove_workspace_member(workspace_id: str, user_id: str, request: Request) -> Response:
+        _require_super_admin(request)
+        auth_service.remove_member(workspace_id, user_id)
+        return Response(status_code=204)
 
     @application.post(
         "/api/workspaces/{workspace_id}/apps", response_model=App, status_code=201
@@ -233,6 +359,13 @@ def create_app(database: Database | None = None) -> FastAPI:
         request: ModelProviderConfigUpdate,
     ) -> ModelProviderConfig:
         return service.update_model_provider_config(workspace_id, config_id, request)
+
+    @application.delete(
+        "/api/workspaces/{workspace_id}/model-provider-configs/{config_id}", status_code=204
+    )
+    def delete_model_provider_config(workspace_id: str, config_id: str) -> Response:
+        service.delete_model_provider_config(workspace_id, config_id)
+        return Response(status_code=204)
 
     @application.get(
         "/api/workspaces/{workspace_id}/plugins",

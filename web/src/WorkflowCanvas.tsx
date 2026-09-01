@@ -55,6 +55,7 @@ function CanvasNodeCard({ data, selected }: NodeProps<CanvasNode>) {
 }
 
 const nodeTypes = { workflow: CanvasNodeCard };
+const workflowCache = new Map<string, WorkflowDefinition>();
 
 export function WorkflowCanvas(props: { app: App; workspaceId: string; providers: ProviderConfig[]; onError: (reason: unknown) => void; onOpenLogs: () => void }) {
   return <ReactFlowProvider><WorkflowCanvasInner {...props} /></ReactFlowProvider>;
@@ -83,14 +84,49 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
   const [showVersions, setShowVersions] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [scheduleTriggers, setScheduleTriggers] = useState<ScheduleTrigger[]>([]);
+  const [workflowLoading, setWorkflowLoading] = useState(true);
+  const [workflowLoadError, setWorkflowLoadError] = useState("");
+  const [resourceLoading, setResourceLoading] = useState(false);
 
   useEffect(() => {
-    api.getWorkflow(app.id).then((draft) => loadDefinition(draft.definition)).catch(onError);
+    let active = true;
+    const cached = workflowCache.get(app.id);
+    setWorkflowLoadError("");
+    setWorkflowLoading(!cached);
+    if (cached) loadDefinition(cached);
+    else {
+      setNodes([]);
+      setEdges([]);
+    }
+    api.getWorkflow(app.id).then((draft) => {
+      if (!active) return;
+      workflowCache.set(app.id, draft.definition);
+      loadDefinition(draft.definition);
+      setWorkflowLoading(false);
+    }).catch((reason) => {
+      if (!active) return;
+      setWorkflowLoading(false);
+      setWorkflowLoadError(reason instanceof Error ? reason.message : String(reason));
+    });
+    return () => { active = false; };
   }, [app.id]);
-  useEffect(() => { api.listPlugins(workspaceId).then(setPlugins).catch(onError); }, [workspaceId]);
-  useEffect(() => { api.listDatasets(workspaceId).then(setDatasets).catch(onError); }, [workspaceId]);
-  useEffect(() => { api.listDifyTools(workspaceId).then(setDifyTools).catch(onError); }, [workspaceId]);
-  useEffect(() => { api.listScheduleTriggers(app.id).then(setScheduleTriggers).catch(onError); }, [app.id]);
+  useEffect(() => {
+    if (workflowLoading) return;
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      setResourceLoading(true);
+      const [pluginResult, datasetResult, difyResult, scheduleResult] = await Promise.allSettled([
+        api.listPlugins(workspaceId), api.listDatasets(workspaceId), api.listDifyTools(workspaceId), api.listScheduleTriggers(app.id)
+      ]);
+      if (!active) return;
+      if (pluginResult.status === "fulfilled") setPlugins(pluginResult.value);
+      if (datasetResult.status === "fulfilled") setDatasets(datasetResult.value);
+      if (difyResult.status === "fulfilled") setDifyTools(difyResult.value);
+      if (scheduleResult.status === "fulfilled") setScheduleTriggers(scheduleResult.value);
+      setResourceLoading(false);
+    }, 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [app.id, workspaceId, workflowLoading]);
 
   function loadDefinition(definition: WorkflowDefinition) {
     setNodes(definition.nodes.map((workflow, index) => ({
@@ -111,6 +147,20 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
     })));
     setSelectedId(null);
     setPanelMode(null);
+  }
+
+  function reloadWorkflow() {
+    workflowCache.delete(app.id);
+    setWorkflowLoading(true);
+    setWorkflowLoadError("");
+    api.getWorkflow(app.id).then((draft) => {
+      workflowCache.set(app.id, draft.definition);
+      loadDefinition(draft.definition);
+      setWorkflowLoading(false);
+    }).catch((reason) => {
+      setWorkflowLoading(false);
+      setWorkflowLoadError(reason instanceof Error ? reason.message : String(reason));
+    });
   }
 
   const selected = useMemo(() => nodes.find((node) => node.id === selectedId) ?? null, [nodes, selectedId]);
@@ -282,6 +332,8 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
     </div>
     <div className={`flow-canvas-main ${panelMode ? "panel-open" : ""}`}>
       <div className="flow-board">
+        {workflowLoading && <div className="flow-canvas-status"><span className="flow-loading-spinner" /><strong>正在加载工作流</strong><small>优先读取画布，工具与知识库将在随后加载</small></div>}
+        {!workflowLoading && workflowLoadError && <div className="flow-canvas-status error"><strong>工作流加载失败</strong><small>{workflowLoadError}</small><button onClick={reloadWorkflow}>重新加载</button></div>}
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -301,6 +353,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
           <MiniMap nodeColor={(node) => (node.data as CanvasData).workflow.type === "llm" ? "#ed5a2a" : (node.data as CanvasData).workflow.type === "answer" ? "#24855b" : "#17335e"} />
           <Controls />
         </ReactFlow>
+        {resourceLoading && !workflowLoading && <div className="flow-resource-loading"><span className="flow-loading-spinner" />正在加载节点资源…</div>}
         <div className="flow-palette"><button className={paletteOpen && !paletteSourceId ? "active" : ""} onClick={() => { setPaletteSourceId(null); setPaletteSourceHandle(null); setPaletteOpen((open) => !open); }} title="添加节点">＋</button><button onClick={() => setPanelMode("run")} title="测试运行">▷</button></div>
         {paletteOpen && <UnifiedNodeLibrary plugins={plugins} difyTools={difyTools} datasets={datasets} addNode={addNode} scheduleCount={scheduleTriggers.length} openSchedules={() => { setPaletteOpen(false); setScheduleOpen(true); }} selectStart={() => {
           const start = nodes.find((node) => node.data.workflow.type === "start");

@@ -20,49 +20,6 @@ from lob_flow.models import (
 from lob_flow.service import NotFoundError
 
 
-BUILTIN_PLUGINS = [
-    {
-        "plugin_id": "lob/text-tools",
-        "name": "Text Tools",
-        "author": "lob",
-        "version": "1.0.0",
-        "description": "文本大小写、裁剪与替换工具。",
-        "icon": "Aa",
-        "verified": True,
-        "tools": [
-            {"name": "uppercase", "label": "转为大写", "description": "将输入文本转为大写。", "parameters": {"text": {"type": "string", "required": True}}},
-            {"name": "lowercase", "label": "转为小写", "description": "将输入文本转为小写。", "parameters": {"text": {"type": "string", "required": True}}},
-            {"name": "replace", "label": "文本替换", "description": "替换文本中的指定内容。", "parameters": {"text": {"type": "string", "required": True}, "old": {"type": "string", "required": True}, "new": {"type": "string", "required": False}}},
-        ],
-    },
-    {
-        "plugin_id": "lob/json-tools",
-        "name": "JSON Tools",
-        "author": "lob",
-        "version": "1.0.0",
-        "description": "解析 JSON 并提取点路径字段。",
-        "icon": "{}",
-        "verified": True,
-        "tools": [
-            {"name": "extract", "label": "提取 JSON 字段", "description": "按 user.profile.name 一类路径提取值。", "parameters": {"json": {"type": "string", "required": True}, "path": {"type": "string", "required": True}}},
-        ],
-    },
-    {
-        "plugin_id": "lob/http-request",
-        "name": "HTTP Request",
-        "author": "lob",
-        "version": "1.0.0",
-        "description": "向公网 HTTPS API 发起受限请求，默认阻止本机和私网地址。",
-        "icon": "↗",
-        "verified": True,
-        "credential_schema": {"bearer_token": {"type": "secret", "required": False}},
-        "tools": [
-            {"name": "request", "label": "HTTP 请求", "description": "调用公网 HTTPS API。", "parameters": {"url": {"type": "string", "required": True}, "method": {"type": "string", "required": False}, "body": {"type": "string", "required": False}}},
-        ],
-    },
-]
-
-
 @dataclass(frozen=True)
 class ToolResult:
     installation_id: str
@@ -77,27 +34,6 @@ class PluginService:
     def __init__(self, database: Database, cipher: CredentialCipher) -> None:
         self.database = database
         self.cipher = cipher
-
-    def ensure_catalog(self) -> None:
-        timestamp = datetime.now(UTC).isoformat()
-        with self.database.connect() as connection:
-            for raw in BUILTIN_PLUGINS:
-                manifest = PluginManifest.model_validate(raw)
-                connection.execute(
-                    """INSERT INTO plugin_catalog
-                       (plugin_id, name, author, version, category, description, icon,
-                        verified, manifest_json, created_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                       ON CONFLICT (plugin_id) DO UPDATE
-                       SET name = EXCLUDED.name, version = EXCLUDED.version,
-                           description = EXCLUDED.description,
-                           manifest_json = EXCLUDED.manifest_json""",
-                    (
-                        manifest.plugin_id, manifest.name, manifest.author,
-                        manifest.version, manifest.category, manifest.description,
-                        manifest.icon, manifest.verified, manifest.model_dump_json(), timestamp,
-                    ),
-                )
 
     def marketplace(self, workspace_id: str) -> list[PluginCatalogItem]:
         with self.database.connect() as connection:
