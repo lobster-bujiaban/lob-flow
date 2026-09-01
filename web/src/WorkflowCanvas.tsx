@@ -19,7 +19,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { api } from "./api";
-import type { App, Dataset, DifyToolProvider, PluginCatalogItem, ProviderConfig, ScheduleTrigger, ScheduleTriggerInput, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowNodeType, WorkflowVersion } from "./types";
+import type { App, Dataset, DifyToolProvider, PluginCatalogItem, ProviderConfig, ScheduleTrigger, ScheduleTriggerInput, StartInputVariable, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowNodeType, WorkflowVersion } from "./types";
 
 type CanvasData = {
   workflow: WorkflowNode;
@@ -60,6 +60,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [input, setInput] = useState("用一句话说明这个工作流");
+  const [runInputs, setRunInputs] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(false);
   const [answer, setAnswer] = useState("");
@@ -104,6 +105,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
   }
 
   const selected = useMemo(() => nodes.find((node) => node.id === selectedId) ?? null, [nodes, selectedId]);
+  const startVariables = useMemo(() => (nodes.find((node) => node.data.workflow.type === "start")?.data.workflow.config.variables as StartInputVariable[] | undefined) ?? [], [nodes]);
   const availableVariables = useMemo(() => {
     if (!selectedId) return [];
     const upstream = new Set<string>();
@@ -146,7 +148,9 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
           ? (() => { if (selectedDify) { const tool = selectedDify.tools.find((item) => item.name === selectedToolName) ?? selectedDify.tools[0]; return { runtime: "dify", plugin_id: selectedDify.plugin_id, provider_name: selectedDify.provider_name, tool_name: tool?.name ?? "", credential_schema: selectedDify.credential_schema ?? {}, credentials: {}, parameters: Object.fromEntries(Object.keys(tool?.parameters ?? {}).map((key) => [key, key === "text" || key === "body" ? "{input}" : ""])) }; } const plugin = selectedPlugin ?? plugins.find((item) => item.installed && item.enabled); const tool = plugin?.manifest.tools.find((item) => item.name === selectedToolName) ?? plugin?.manifest.tools[0]; return { runtime: "builtin", plugin_id: plugin?.manifest.plugin_id ?? "", tool_name: tool?.name ?? "", parameters: Object.fromEntries(Object.keys(tool?.parameters ?? {}).map((key) => [key, key === "text" || key === "json" ? "{input}" : ""])) }; })()
         : type === "knowledge"
           ? { dataset_id: selectedDataset?.id ?? datasets[0]?.id ?? "", query: "{input}", top_k: 3, score_threshold: 0 }
-          : {};
+          : type === "start"
+            ? { variables: [{ name: "input", label: "用户输入", type: "string", required: true, default: "", description: "工作流的主要输入" }] }
+            : {};
     const tool = type === "tool" ? (selectedDify?.tools.find((item) => item.name === selectedToolName) ?? selectedPlugin?.manifest.tools.find((item) => item.name === selectedToolName)) : undefined;
     const sourceNode = paletteSourceId ? nodes.find((item) => item.id === paletteSourceId) : undefined;
     const node: CanvasNode = {
@@ -218,10 +222,11 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
   async function rollback(version: WorkflowVersion) { try { const draft = await api.rollbackWorkflow(app.id, version.id); loadDefinition(draft.definition); setShowVersions(false); setLastSaved(`已回滚到 v${version.version}，请重新发布`); } catch (reason) { onError(reason); } }
 
   async function runSelectedNode(nodeId: string) {
-    if (!input.trim() || running || !(await save())) return;
+    const payload = startVariables.length ? runInputs : input.trim();
+    if ((!startVariables.length && !input.trim()) || running || !(await save())) return;
     setRunning(true);
     try {
-      await api.streamWorkflowNode(app.id, nodeId, input.trim(), (event) => {
+      await api.streamWorkflowNode(app.id, nodeId, payload, (event) => {
         if (event.node_id) setNodes((current) => current.map((node) => node.id === event.node_id ? { ...node, data: { ...node.data, status: event.type === "node_started" ? "running" : event.type === "node_succeeded" ? "succeeded" : event.type === "node_failed" ? "failed" : node.data.status, output: event.type === "node_delta" ? (node.data.output ?? "") + String(event.data.delta ?? "") : event.type === "node_succeeded" ? String((event.data.output as { value?: string })?.value ?? "") : node.data.output } } : node));
         if (event.type === "workflow_failed") onError(`${event.data.error_code}: ${event.data.error}`);
       });
@@ -229,11 +234,12 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
   }
 
   async function run() {
-    if (!input.trim() || running || !(await save())) return;
+    const payload = startVariables.length ? runInputs : input.trim();
+    if ((!startVariables.length && !input.trim()) || running || !(await save())) return;
     setRunning(true); setAnswer("");
     setNodes((current) => current.map((node) => ({ ...node, data: { ...node.data, status: undefined, output: undefined } })));
     try {
-      await api.streamWorkflow(app.id, input.trim(), (event: WorkflowEvent) => {
+      await api.streamWorkflow(app.id, payload, (event: WorkflowEvent) => {
         if (event.node_id) setNodes((current) => current.map((node) => node.id === event.node_id ? {
           ...node,
           data: {
@@ -284,7 +290,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs 
           setPaletteOpen(false);
         }} close={() => { setPaletteOpen(false); setPaletteSourceId(null); }} />}
       </div>
-      {panelMode && <aside className="flow-inspector"><button className="inspector-close" onClick={() => { setPanelMode(null); setSelectedId(null); }}>×</button>{panelMode === "node" && selected ? <NodeInspector node={selected.data.workflow} variables={availableVariables} providers={providers} plugins={plugins} difyTools={difyTools} datasets={datasets} update={updateSelected} remove={deleteSelected} runNode={() => runSelectedNode(selected.id)} running={running} /> : <RunInspector input={input} setInput={setInput} run={run} running={running} answer={answer} />}</aside>}
+      {panelMode && <aside className="flow-inspector"><button className="inspector-close" onClick={() => { setPanelMode(null); setSelectedId(null); }}>×</button>{panelMode === "node" && selected ? <NodeInspector node={selected.data.workflow} variables={availableVariables} providers={providers} plugins={plugins} difyTools={difyTools} datasets={datasets} update={updateSelected} remove={deleteSelected} runNode={() => runSelectedNode(selected.id)} running={running} /> : <RunInspector variables={startVariables} values={runInputs} setValues={setRunInputs} input={input} setInput={setInput} run={run} running={running} answer={answer} />}</aside>}
     </div>
     {showVersions && <div className="modal-backdrop"><div className="modal workflow-version-modal"><div className="modal-head"><div><h3>发布版本</h3><p>API 执行最新发布版本；恢复后需重新发布才会生效。</p></div><button onClick={() => setShowVersions(false)}>×</button></div>{versions.map((version) => <div className="workflow-version-row" key={version.id}><div><strong>v{version.version}</strong><small>{new Date(version.created_at).toLocaleString()}</small></div><button onClick={() => rollback(version)}>恢复为草稿</button></div>)}{!versions.length && <p className="inspector-hint">尚未发布任何版本。</p>}</div></div>}
     {scheduleOpen && <ScheduleManagerModal appId={app.id} triggers={scheduleTriggers} onChange={setScheduleTriggers} close={() => setScheduleOpen(false)} onError={onError} onOpenLogs={onOpenLogs} />}
@@ -397,7 +403,8 @@ function ScheduleManagerModal({ appId, triggers, onChange, close, onError, onOpe
 }
 
 function VariablePicker({ nodes, currentId, onInsert }: { nodes: WorkflowNode[]; currentId: string; onInsert: (variable: string) => void }) {
-  return <select className="variable-picker" value="" onChange={(event) => { if (event.target.value) onInsert(event.target.value); }}><option value="">＋ 插入变量</option><option value="{{start.input}}">开始 / 用户输入</option>{nodes.filter((item) => item.id !== currentId && item.type !== "start").map((item) => <option key={item.id} value={`{{${item.id}.output}}`}>{item.name} / 输出</option>)}</select>;
+  const startVariables = (nodes.find((item) => item.type === "start")?.config.variables as StartInputVariable[] | undefined) ?? [];
+  return <select className="variable-picker" value="" onChange={(event) => { if (event.target.value) onInsert(event.target.value); }}><option value="">＋ 插入变量</option>{startVariables.map((variable) => <option key={variable.name} value={`{{start.${variable.name}}}`}>开始 / {variable.label || variable.name}</option>)}{nodes.filter((item) => item.id !== currentId && item.type !== "start").map((item) => <option key={item.id} value={`{{${item.id}.output}}`}>{item.name} / 输出</option>)}</select>;
 }
 
 function ToolVariablePicker({ parameters, nodes, currentId, onChange }: { parameters: Record<string, unknown>; nodes: WorkflowNode[]; currentId: string; onChange: (parameters: Record<string, unknown>) => void }) {
@@ -406,6 +413,11 @@ function ToolVariablePicker({ parameters, nodes, currentId, onChange }: { parame
   if (!keys.length) return null;
   const active = keys.includes(parameter) ? parameter : keys[0];
   return <div className="tool-variable-picker"><label>插入变量到参数</label><select value={active} onChange={(event) => setParameter(event.target.value)}>{keys.map((key) => <option key={key} value={key}>{key}</option>)}</select><VariablePicker nodes={nodes} currentId={currentId} onInsert={(variable) => onChange({ ...parameters, [active]: `${String(parameters[active] ?? "")}${variable}` })} /></div>;
+}
+
+function StartVariablesEditor({ variables, onChange }: { variables: StartInputVariable[]; onChange: (variables: StartInputVariable[]) => void }) {
+  function update(index: number, patch: Partial<StartInputVariable>) { onChange(variables.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item)); }
+  return <div className="start-variables"><div className="start-variables-head"><div><strong>接口输入参数</strong><small>调用 API 时通过 inputs 对象传入</small></div><button onClick={() => onChange([...variables, { name: `field_${variables.length + 1}`, label: "新参数", type: "string", required: false, default: "" }])}>＋ 添加参数</button></div>{variables.map((variable, index) => <article key={index}><div><label>参数名</label><input value={variable.name} onChange={(event) => update(index, { name: event.target.value.replace(/[^A-Za-z0-9_]/g, "") })} placeholder="topic" /></div><div><label>显示名称</label><input value={variable.label} onChange={(event) => update(index, { label: event.target.value })} placeholder="主题" /></div><div><label>类型</label><select value={variable.type} onChange={(event) => update(index, { type: event.target.value as StartInputVariable["type"] })}><option value="string">文本</option><option value="number">数字</option><option value="boolean">布尔值</option></select></div><label className="start-required"><input type="checkbox" checked={variable.required} onChange={(event) => update(index, { required: event.target.checked })} />必填</label><button className="row-delete" onClick={() => onChange(variables.filter((_, itemIndex) => itemIndex !== index))}>×</button><div className="start-variable-wide"><label>默认值</label><input value={String(variable.default ?? "")} onChange={(event) => update(index, { default: event.target.value })} placeholder="可选" /></div><div className="start-variable-wide"><label>说明</label><input value={variable.description ?? ""} onChange={(event) => update(index, { description: event.target.value })} placeholder="向接口调用者说明该参数" /></div></article>)}{!variables.length && <p>尚未定义输入参数。添加后，API 和调试面板会自动生成对应字段。</p>}</div>;
 }
 
 function NodeInspector({ node, variables, providers, plugins, difyTools, datasets, update, remove, runNode, running }: { node: WorkflowNode; variables: WorkflowNode[]; providers: ProviderConfig[]; plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; datasets: Dataset[]; update: (patch: Partial<WorkflowNode>, config?: Record<string, unknown>) => void; remove: () => void; runNode: () => void; running: boolean }) {
@@ -418,7 +430,7 @@ function NodeInspector({ node, variables, providers, plugins, difyTools, dataset
     <div className="inspector-title"><span>{node.type.toUpperCase()}</span><h3>节点配置</h3></div>
     <label>节点名称</label><input value={node.name} onChange={(event) => update({ name: event.target.value })} />
     <button className="node-debug-button" onClick={runNode} disabled={running}>{running ? "运行中…" : "▷ 单独运行此节点"}</button>
-    {node.type === "start" && <p className="inspector-hint">Start 是工作流唯一入口，不能删除。</p>}
+    {node.type === "start" && <><p className="inspector-hint">开始节点是工作流唯一入口。定义参数后，可通过 <code>inputs</code> 对象调用接口。</p><StartVariablesEditor variables={(node.config.variables as StartInputVariable[] | undefined) ?? []} onChange={(variables) => update({}, { variables })} /></>}
     {node.type === "template" && <><label>Prompt 模板</label><textarea rows={6} value={String(node.config.template ?? "")} onChange={(event) => update({}, { template: event.target.value })} /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { template: `${String(node.config.template ?? "")}${variable}` })} /><p className="inspector-hint">可插入开始输入或任意已执行节点的输出。</p></>}
     {node.type === "llm" && <><label>模型配置</label><select value={String(node.config.provider_config_id ?? "")} onChange={(event) => update({}, { provider_config_id: event.target.value })}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><label>模型</label><input value={String(node.config.model ?? "gpt-5.4")} onChange={(event) => update({}, { model: event.target.value })} /><label>System Prompt</label><textarea rows={6} value={String(node.config.system_prompt ?? "")} onChange={(event) => update({}, { system_prompt: event.target.value })} /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { system_prompt: `${String(node.config.system_prompt ?? "")}${variable}` })} /><div className="inspector-grid"><div><label>温度</label><input type="number" step="0.1" min="0" max="2" value={Number(node.config.temperature ?? 0.2)} onChange={(event) => update({}, { temperature: Number(event.target.value) })} /></div><div><label>最大 Token</label><input type="number" min="1" value={Number(node.config.max_tokens ?? 512)} onChange={(event) => update({}, { max_tokens: Number(event.target.value) })} /></div></div></>}
     {node.type === "knowledge" && <><label>知识库</label><select value={String(node.config.dataset_id ?? "")} onChange={(event) => update({}, { dataset_id: event.target.value })}><option value="">请选择知识库</option>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.icon} {dataset.name}</option>)}</select><label>检索 Query</label><textarea rows={4} value={String(node.config.query ?? "{input}")} onChange={(event) => update({}, { query: event.target.value })} /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { query: `${String(node.config.query ?? "")}${variable}` })} /><p className="inspector-hint">选择开始输入或上游节点输出作为检索内容。</p><div className="inspector-grid"><div><label>Top K</label><input type="number" min="1" max="20" value={Number(node.config.top_k ?? 3)} onChange={(event) => update({}, { top_k: Number(event.target.value) })} /></div><div><label>分数阈值</label><input type="number" min="0" max="1" step="0.05" value={Number(node.config.score_threshold ?? 0)} onChange={(event) => update({}, { score_threshold: Number(event.target.value) })} /></div></div>{!datasets.length && <p className="inspector-hint">请先在知识库页面创建知识库并添加文档。</p>}</>}
@@ -430,6 +442,7 @@ function NodeInspector({ node, variables, providers, plugins, difyTools, dataset
   </div>;
 }
 
-function RunInspector({ input, setInput, run, running, answer }: { input: string; setInput: (value: string) => void; run: () => void; running: boolean; answer: string }) {
-  return <div className="inspector-content"><div className="inspector-title"><span>DEBUG</span><h3>运行调试</h3></div><p className="inspector-hint">运行前会自动保存并执行 DAG 校验。</p><label>工作流输入</label><textarea rows={7} value={input} onChange={(event) => setInput(event.target.value)} /><button className="primary wide" onClick={run} disabled={running || !input.trim()}>{running ? "执行中" : "运行工作流"}</button>{answer && <div className="workflow-answer"><span>最终回答</span><p>{answer}</p></div>}</div>;
+function RunInspector({ variables, values, setValues, input, setInput, run, running, answer }: { variables: StartInputVariable[]; values: Record<string, unknown>; setValues: (value: Record<string, unknown>) => void; input: string; setInput: (value: string) => void; run: () => void; running: boolean; answer: string }) {
+  const missing = variables.some((variable) => variable.required && (values[variable.name] ?? variable.default ?? "") === "");
+  return <div className="inspector-content"><div className="inspector-title"><span>DEBUG</span><h3>运行调试</h3></div><p className="inspector-hint">运行前会自动保存并执行 DAG 校验。</p>{variables.length ? <div className="structured-run-inputs">{variables.map((variable) => <label key={variable.name}>{variable.label || variable.name}{variable.required ? " *" : ""}<small>{variable.name} · {variable.type === "string" ? "文本" : variable.type === "number" ? "数字" : "布尔值"}</small>{variable.type === "boolean" ? <select value={String(values[variable.name] ?? variable.default ?? "false")} onChange={(event) => setValues({ ...values, [variable.name]: event.target.value === "true" })}><option value="false">否</option><option value="true">是</option></select> : <input type={variable.type === "number" ? "number" : "text"} value={String(values[variable.name] ?? variable.default ?? "")} onChange={(event) => setValues({ ...values, [variable.name]: event.target.value })} placeholder={variable.description || variable.name} />}</label>)}</div> : <><label>工作流输入</label><textarea rows={7} value={input} onChange={(event) => setInput(event.target.value)} /></>}<button className="primary wide" onClick={run} disabled={running || missing || (!variables.length && !input.trim())}>{running ? "执行中" : "运行工作流"}</button>{answer && <div className="workflow-answer"><span>最终回答</span><p>{answer}</p></div>}</div>;
 }

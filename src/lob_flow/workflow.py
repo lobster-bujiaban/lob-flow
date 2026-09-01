@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+import re
 
 from lob_flow.models import DraftDefinition, WorkflowDefinition, WorkflowEdge, WorkflowNode
 
@@ -37,6 +38,18 @@ def validate_and_sort(definition: WorkflowDefinition) -> list[WorkflowNode]:
         indegree[edge.target] += 1
 
     for node in definition.nodes:
+        if node.type == "start":
+            variables = node.config.get("variables", [])
+            names: set[str] = set()
+            for variable in variables:
+                name = str(variable.get("name", ""))
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                    errors.append(f"开始节点变量名无效：{name or '空'}")
+                elif name in names:
+                    errors.append(f"开始节点变量名重复：{name}")
+                names.add(name)
+                if variable.get("type") not in ("string", "number", "boolean"):
+                    errors.append(f"开始节点变量 {name} 类型无效")
         if node.type == "template" and not node.config.get("template"):
             errors.append(f"Template 节点 {node.id} 缺少 template")
         if node.type == "llm":

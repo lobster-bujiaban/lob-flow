@@ -49,6 +49,15 @@ export interface RunEvent {
 
 export type WorkflowNodeType = "start" | "template" | "llm" | "knowledge" | "tool" | "answer";
 
+export interface StartInputVariable {
+  name: string;
+  label: string;
+  type: "string" | "number" | "boolean";
+  required: boolean;
+  default?: string | number | boolean;
+  description?: string;
+}
+
 export interface WorkflowNode {
   id: string;
   type: WorkflowNodeType;
@@ -106,6 +115,7 @@ export interface WorkflowRun {
   app_id: string;
   status: "running" | "succeeded" | "failed";
   input: string;
+  inputs: Record<string, unknown>;
   output: string | null;
   error: string | null;
   error_code: string | null;

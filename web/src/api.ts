@@ -155,11 +155,11 @@ export const api = {
       if (done) break;
     }
   },
-  async streamWorkflow(appId: string, input: string, onEvent: (event: WorkflowEvent) => void) {
+  async streamWorkflow(appId: string, input: string | Record<string, unknown>, onEvent: (event: WorkflowEvent) => void) {
     const response = await fetch(`/api/apps/${appId}/workflow-runs/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input })
+      body: JSON.stringify(typeof input === "string" ? { input } : { inputs: input })
     });
     if (!response.ok || !response.body) throw new Error(`工作流运行失败：${response.status}`);
     const reader = response.body.getReader();
@@ -177,8 +177,8 @@ export const api = {
       if (done) break;
     }
   },
-  async streamWorkflowNode(appId: string, nodeId: string, input: string, onEvent: (event: WorkflowEvent) => void) {
-    const response = await fetch(`/api/apps/${appId}/workflow-nodes/${nodeId}/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input }) });
+  async streamWorkflowNode(appId: string, nodeId: string, input: string | Record<string, unknown>, onEvent: (event: WorkflowEvent) => void) {
+    const response = await fetch(`/api/apps/${appId}/workflow-nodes/${nodeId}/stream`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(typeof input === "string" ? { input } : { inputs: input }) });
     if (!response.ok || !response.body) throw new Error(`节点运行失败：${response.status}`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = "";
     while (true) { const { value, done } = await reader.read(); buffer += decoder.decode(value, { stream: !done }); const blocks = buffer.split("\n\n"); buffer = blocks.pop() ?? ""; for (const block of blocks) { const data = block.split("\n").find((line) => line.startsWith("data: "))?.slice(6); if (data) onEvent(JSON.parse(data) as WorkflowEvent); } if (done) break; }

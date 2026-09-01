@@ -1,6 +1,6 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import type { App as FlowApp, AppType, DraftDefinition, NodeRun, ProviderConfig, ServiceApiKey, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowRun, Workspace } from "./types";
+import type { App as FlowApp, AppType, DraftDefinition, NodeRun, ProviderConfig, ServiceApiKey, StartInputVariable, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowRun, Workspace } from "./types";
 import lobsterLogo from "./assets/lobster-logo.png";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { PluginMarketplace } from "./PluginMarketplace";
@@ -238,9 +238,11 @@ function ApiAccessPanel({ app, onError }: { app: FlowApp; onError: (reason: unkn
   const [keys, setKeys] = useState<ServiceApiKey[]>([]);
   const [newKey, setNewKey] = useState("");
   const [creating, setCreating] = useState(false);
+  const [inputVariables, setInputVariables] = useState<StartInputVariable[]>([]);
   const baseUrl = `${window.location.origin}/v1`;
   const load = () => api.listApiKeys(app.id).then(setKeys).catch(onError);
   useEffect(() => { void load(); }, [app.id]);
+  useEffect(() => { api.getWorkflow(app.id).then((draft) => setInputVariables((draft.definition.nodes.find((node) => node.type === "start")?.config.variables as StartInputVariable[] | undefined) ?? [])).catch(onError); }, [app.id]);
   async function createKey() {
     try { setCreating(true); const item = await api.createApiKey(app.id, "默认密钥"); setNewKey(item.api_key ?? ""); await load(); }
     catch (reason) { onError(reason); } finally { setCreating(false); }

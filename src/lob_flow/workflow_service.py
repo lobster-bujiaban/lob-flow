@@ -79,13 +79,15 @@ class WorkflowService:
             )
         return WorkflowDraft(app_id=app_id, definition=definition, updated_at=timestamp)
 
-    def stream_run(self, app_id: str, user_input: str, trigger_source: str = "debug", use_published: bool = False, start_node_id: str | None = None) -> Iterator[WorkflowEvent]:
+    def stream_run(self, app_id: str, user_input: str | dict, trigger_source: str = "debug", use_published: bool = False, start_node_id: str | None = None) -> Iterator[WorkflowEvent]:
         app = self._get_app(app_id)
         version = self.get_latest_version(app_id) if use_published else None
         if use_published and version is None:
             raise WorkflowValidationError(["应用尚未发布工作流版本"])
         definition = version.definition if version else self.get_draft(app_id).definition
         ordered = validate_and_sort(definition)
+        start = next(node for node in ordered if node.type == "start")
+        start_inputs, input_text = self._normalize_inputs(start, user_input)
         if start_node_id:
             index = next((i for i, node in enumerate(ordered) if node.id == start_node_id), -1)
             if index < 0:
@@ -96,12 +98,13 @@ class WorkflowService:
         with self.database.connect() as connection:
             connection.execute(
                 """INSERT INTO workflow_runs
-                   (id, app_id, status, input, definition_snapshot_json, created_at, trigger_source, workflow_version_id)
-                   VALUES (%s, %s, 'running', %s, %s, %s, %s, %s)""",
+                   (id, app_id, status, input, inputs_json, definition_snapshot_json, created_at, trigger_source, workflow_version_id)
+                   VALUES (%s, %s, 'running', %s, %s, %s, %s, %s, %s)""",
                 (
                     run_id,
                     app_id,
-                    user_input,
+                    input_text,
+                    json.dumps(start_inputs, ensure_ascii=False),
                     definition.model_dump_json(),
                     created_at.isoformat(),
                     trigger_source,
@@ -109,13 +112,13 @@ class WorkflowService:
                 ),
             )
         sequence = 1
-        yield self._event(run_id, sequence, "workflow_started", None, {"input": user_input})
+        yield self._event(run_id, sequence, "workflow_started", None, {"input": input_text, "inputs": start_inputs})
         predecessors: dict[str, list[str]] = {node.id: [] for node in ordered}
         for edge in definition.edges:
             if edge.target in predecessors:
                 predecessors[edge.target].append(edge.source)
         node_values: dict[str, str] = {}
-        value = user_input
+        value = input_text
         run_started = monotonic()
         current_node_id: str | None = None
         current_node_run_id: str | None = None
@@ -123,7 +126,7 @@ class WorkflowService:
         try:
             for node in ordered:
                 if node.type == "start" or (start_node_id and node.id == start_node_id):
-                    value = user_input
+                    value = input_text
                 else:
                     upstream_values = [node_values[node_id] for node_id in predecessors[node.id] if node_id in node_values]
                     if not upstream_values:
@@ -159,10 +162,10 @@ class WorkflowService:
                 )
 
                 if node.type == "template":
-                    value = self._resolve_text(str(node.config["template"]), value, node_values, user_input)
+                    value = self._resolve_text(str(node.config["template"]), value, node_values, start_inputs)
                 elif node.type == "llm":
                     definition = DraftDefinition(
-                        system_prompt=self._resolve_text(str(node.config.get("system_prompt", "")), value, node_values, user_input),
+                        system_prompt=self._resolve_text(str(node.config.get("system_prompt", "")), value, node_values, start_inputs),
                         user_prompt_template="{input}",
                         model=ModelConfig(
                             provider_config_id=node.config["provider_config_id"],
@@ -188,7 +191,7 @@ class WorkflowService:
                     value = "".join(parts)
                 elif node.type == "tool":
                     parameters = self._resolve_parameters(
-                        node.config.get("parameters", {}), value, node_values, user_input
+                        node.config.get("parameters", {}), value, node_values, start_inputs
                     )
                     if node.config.get("runtime") == "dify":
                         if self.dify_daemon is None:
@@ -246,7 +249,7 @@ class WorkflowService:
                 elif node.type == "knowledge":
                     if self.knowledge_service is None:
                         raise RuntimeError("Knowledge service is unavailable")
-                    query = self._resolve_text(str(node.config.get("query", "{input}")), value, node_values, user_input)
+                    query = self._resolve_text(str(node.config.get("query", "{input}")), value, node_values, start_inputs)
                     response = self.knowledge_service.retrieve(
                         str(node.config["dataset_id"]),
                         RetrievalRequest(
@@ -362,6 +365,7 @@ class WorkflowService:
         values["definition_snapshot"] = WorkflowDefinition.model_validate_json(
             values.pop("definition_snapshot_json")
         )
+        values["inputs"] = json.loads(values.pop("inputs_json", "{}"))
         return WorkflowRun(**values)
 
     def list_runs(self, app_id: str, limit: int = 100) -> list[WorkflowRun]:
@@ -375,6 +379,7 @@ class WorkflowService:
         for row in rows:
             values = dict(row)
             values["definition_snapshot"] = WorkflowDefinition.model_validate_json(values.pop("definition_snapshot_json"))
+            values["inputs"] = json.loads(values.pop("inputs_json", "{}"))
             result.append(WorkflowRun(**values))
         return result
 
@@ -528,7 +533,7 @@ class WorkflowService:
 
     def retry_run(self, run_id: str) -> WorkflowRun:
         previous = self.get_run(run_id)
-        events = list(self.stream_run(previous.app_id, previous.input, "retry"))
+        events = list(self.stream_run(previous.app_id, previous.inputs or previous.input, "retry"))
         return self.get_run(events[0].workflow_run_id)
 
     def _event(
@@ -597,14 +602,54 @@ class WorkflowService:
             raise WorkflowValidationError(["Knowledge 节点引用的知识库不存在或不属于当前空间"])
 
     @staticmethod
-    def _resolve_text(text: str, value: str, node_values: dict[str, str] | None = None, user_input: str = "") -> str:
+    def _normalize_inputs(start: object, payload: str | dict) -> tuple[dict, str]:
+        variables = getattr(start, "config", {}).get("variables", [])
+        raw = payload if isinstance(payload, dict) else {"input": payload}
+        if not variables:
+            text = str(raw.get("input", payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)))
+            return raw, text
+        result: dict = {}
+        errors: list[str] = []
+        for variable in variables:
+            name = str(variable["name"])
+            value = raw.get(name, variable.get("default"))
+            if value in (None, "") and variable.get("required"):
+                errors.append(f"缺少必填输入：{variable.get('label') or name}")
+                continue
+            if value in (None, ""):
+                result[name] = value
+                continue
+            try:
+                if variable["type"] == "number":
+                    value = float(value) if "." in str(value) else int(value)
+                elif variable["type"] == "boolean":
+                    if isinstance(value, str):
+                        if value.lower() not in ("true", "false"):
+                            raise ValueError
+                        value = value.lower() == "true"
+                    else:
+                        value = bool(value)
+                else:
+                    value = str(value)
+            except (TypeError, ValueError):
+                errors.append(f"输入类型错误：{variable.get('label') or name}")
+            result[name] = value
+        if errors:
+            raise WorkflowValidationError(errors)
+        text = str(result.get("input")) if set(result) == {"input"} else json.dumps(result, ensure_ascii=False)
+        return result, text
+
+    @staticmethod
+    def _resolve_text(text: str, value: str, node_values: dict[str, str] | None = None, start_inputs: dict | None = None) -> str:
         references = node_values or {}
+        inputs = start_inputs or {}
         result = text.replace("{input}", value)
 
         def replace_variable(match: re.Match[str]) -> str:
             node_id, field = match.group(1), match.group(2)
-            if node_id == "start" and field == "input":
-                return user_input
+            if node_id == "start":
+                item = inputs.get(field, "")
+                return item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
             node_value = references.get(node_id, "")
             if field in ("output", "value"):
                 return node_value
@@ -624,12 +669,12 @@ class WorkflowService:
         return result
 
     @staticmethod
-    def _resolve_parameters(parameters: dict, value: str, node_values: dict[str, str] | None = None, user_input: str = "") -> dict:
+    def _resolve_parameters(parameters: dict, value: str, node_values: dict[str, str] | None = None, start_inputs: dict | None = None) -> dict:
         references = node_values or {}
 
         def resolve(item):
             if isinstance(item, str):
-                result = WorkflowService._resolve_text(item, value, references, user_input)
+                result = WorkflowService._resolve_text(item, value, references, start_inputs)
                 for node_id, node_value in references.items():
                     prefix = f"{{{node_id}."
                     while prefix in result:

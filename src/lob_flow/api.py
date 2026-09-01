@@ -383,7 +383,7 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.post("/api/apps/{app_id}/workflow-runs/stream")
     def stream_workflow(app_id: str, request: WorkflowRunCreate) -> StreamingResponse:
         def generate():
-            for event in workflow_service.stream_run(app_id, request.input):
+            for event in workflow_service.stream_run(app_id, request.payload()):
                 payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False)
                 yield f"event: {event.type}\ndata: {payload}\n\n"
 
@@ -392,7 +392,7 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.post("/api/apps/{app_id}/workflow-nodes/{node_id}/stream")
     def stream_workflow_node(app_id: str, node_id: str, request: WorkflowRunCreate) -> StreamingResponse:
         def generate():
-            for event in workflow_service.stream_run(app_id, request.input, "node_debug", start_node_id=node_id):
+            for event in workflow_service.stream_run(app_id, request.payload(), "node_debug", start_node_id=node_id):
                 yield f"event: {event.type}\ndata: {json.dumps(event.model_dump(mode='json'), ensure_ascii=False)}\n\n"
         return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -442,9 +442,9 @@ def create_app(database: Database | None = None) -> FastAPI:
             app_id = workflow_service.authenticate_api_key(authorization[7:].strip())
         except NotFoundError as exc:
             raise HTTPException(status_code=401, detail="API Key 无效或已被删除") from exc
-        events = list(workflow_service.stream_run(app_id, request.input, "api", use_published=True))
+        events = list(workflow_service.stream_run(app_id, request.payload(), "api", use_published=True))
         run = workflow_service.get_run(events[0].workflow_run_id)
-        return {"workflow_run_id": run.id, "status": run.status, "output": run.output, "error": run.error, "duration_ms": run.duration_ms}
+        return {"workflow_run_id": run.id, "status": run.status, "inputs": run.inputs, "output": run.output, "error": run.error, "duration_ms": run.duration_ms}
 
     @application.get("/api/workspaces/{workspace_id}/plugin-credentials", response_model=list[PluginCredential])
     def list_plugin_credentials(workspace_id: str, plugin_id: str = "") -> list[PluginCredential]:

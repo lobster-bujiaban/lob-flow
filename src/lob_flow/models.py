@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class WorkspaceCreate(BaseModel):
@@ -197,7 +197,17 @@ class PluginRuntimeState(BaseModel):
 
 
 class WorkflowRunCreate(BaseModel):
-    input: str = Field(min_length=1, max_length=20_000)
+    input: str | None = Field(default=None, min_length=1, max_length=20_000)
+    inputs: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def require_input(self) -> "WorkflowRunCreate":
+        if self.input is None and self.inputs is None:
+            raise ValueError("请提供 input 或 inputs")
+        return self
+
+    def payload(self) -> str | dict[str, Any]:
+        return self.inputs if self.inputs is not None else self.input or ""
 
 
 class ScheduleTriggerCreate(BaseModel):
@@ -235,6 +245,7 @@ class WorkflowRun(BaseModel):
     app_id: str
     status: Literal["running", "succeeded", "failed"]
     input: str
+    inputs: dict[str, Any] = Field(default_factory=dict)
     output: str | None = None
     error: str | None = None
     error_code: str | None = None
