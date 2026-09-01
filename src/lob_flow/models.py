@@ -455,6 +455,10 @@ class DatasetCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=1000)
     icon: str = Field(default="📖", max_length=20)
+    search_method: Literal["keyword_search", "vector_search", "hybrid_search"] = "hybrid_search"
+    top_k: int = Field(default=3, ge=1, le=20)
+    score_threshold: float = Field(default=0, ge=0, le=1)
+    vector_weight: float = Field(default=0.7, ge=0, le=1)
 
 
 class Dataset(BaseModel):
@@ -467,6 +471,9 @@ class Dataset(BaseModel):
     search_method: str
     top_k: int
     score_threshold: float
+    embedding_model: str = "lob-hash-embedding-v1"
+    embedding_dimension: int = 256
+    vector_weight: float = 0.7
     document_count: int = 0
     segment_count: int = 0
     created_at: datetime
@@ -479,6 +486,7 @@ class DocumentCreate(BaseModel):
     separator: str = Field(default="\n\n", max_length=20)
     max_chars: int = Field(default=1200, ge=100, le=10_000)
     overlap: int = Field(default=150, ge=0, le=2000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class DatasetDocument(BaseModel):
@@ -490,6 +498,7 @@ class DatasetDocument(BaseModel):
     segment_count: int
     enabled: bool
     error: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -512,16 +521,27 @@ class DocumentSegment(BaseModel):
     word_count: int
     token_count: int
     keywords: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    embedding_model: str | None = None
     enabled: bool
     hit_count: int
     created_at: datetime
     updated_at: datetime
 
 
+class MetadataFilterCondition(BaseModel):
+    key: str = Field(min_length=1, max_length=100, pattern=r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+    operator: Literal["equals", "not_equals", "contains", "in", "exists"] = "equals"
+    value: Any = None
+
+
 class RetrievalRequest(BaseModel):
     query: str = Field(min_length=1, max_length=20_000)
     top_k: int | None = Field(default=None, ge=1, le=20)
     score_threshold: float | None = Field(default=None, ge=0, le=1)
+    search_method: Literal["keyword_search", "vector_search", "hybrid_search"] | None = None
+    vector_weight: float | None = Field(default=None, ge=0, le=1)
+    metadata_filter: list[MetadataFilterCondition] = Field(default_factory=list, max_length=20)
 
 
 class RetrievalResult(BaseModel):
@@ -531,9 +551,14 @@ class RetrievalResult(BaseModel):
     content: str
     position: int
     score: float
+    keyword_score: float = 0
+    vector_score: float = 0
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RetrievalResponse(BaseModel):
     query: str
     results: list[RetrievalResult]
     duration_ms: int
+    search_method: str = "hybrid_search"
+    embedding_model: str = "lob-hash-embedding-v1"

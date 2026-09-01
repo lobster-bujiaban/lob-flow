@@ -306,6 +306,9 @@ class WorkflowService:
                                 str(node.config["dataset_id"]), RetrievalRequest(
                                     query=query, top_k=int(node.config.get("top_k", 3)),
                                     score_threshold=float(node.config.get("score_threshold", 0)),
+                                    search_method=str(node.config.get("search_method", "hybrid_search")),
+                                    vector_weight=float(node.config.get("vector_weight", 0.7)),
+                                    metadata_filter=node.config.get("metadata_filter", []),
                                 ),
                             ), int(node.config.get("retry_count", 0)), float(node.config.get("retry_backoff_seconds", 1)),
                             float(node.config.get("node_timeout_seconds", 30)),

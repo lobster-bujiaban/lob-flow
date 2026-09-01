@@ -62,8 +62,13 @@ def validate_and_sort(definition: WorkflowDefinition) -> list[WorkflowNode]:
                     errors.append(f"Tool 节点 {node.id} 缺少 {key}")
             if node.config.get("runtime") == "dify" and not node.config.get("provider_name"):
                 errors.append(f"Dify Tool 节点 {node.id} 缺少 provider_name")
-        if node.type == "knowledge" and not node.config.get("dataset_id"):
-            errors.append(f"Knowledge 节点 {node.id} 缺少 dataset_id")
+        if node.type == "knowledge":
+            if not node.config.get("dataset_id"):
+                errors.append(f"Knowledge 节点 {node.id} 缺少 dataset_id")
+            if node.config.get("search_method", "hybrid_search") not in ("keyword_search", "vector_search", "hybrid_search"):
+                errors.append(f"Knowledge 节点 {node.id} 检索方式无效")
+            if not 0 <= float(node.config.get("vector_weight", 0.7)) <= 1:
+                errors.append(f"Knowledge 节点 {node.id} 向量权重必须在 0 到 1 之间")
         if node.type == "condition":
             if not node.config.get("left"):
                 errors.append(f"条件节点 {node.id} 缺少判断变量")

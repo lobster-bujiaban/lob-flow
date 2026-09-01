@@ -251,20 +251,27 @@ export interface DifyToolProvider {
 export interface Dataset {
   id: string; workspace_id: string; name: string; description: string; icon: string;
   indexing_technique: string; search_method: string; top_k: number; score_threshold: number;
+  embedding_model: string; embedding_dimension: number; vector_weight: number;
   document_count: number; segment_count: number; created_at: string; updated_at: string;
 }
 
 export interface DatasetDocument {
   id: string; dataset_id: string; name: string; status: string; word_count: number;
-  segment_count: number; enabled: boolean; error: string | null; created_at: string; updated_at: string;
+  segment_count: number; enabled: boolean; error: string | null; metadata: Record<string, unknown>; created_at: string; updated_at: string;
 }
 
 export interface DocumentSegment {
   id: string; dataset_id: string; document_id: string; document_name: string; position: number;
   content: string; word_count: number; token_count: number; keywords: string[];
+  metadata: Record<string, unknown>; embedding_model: string | null;
   enabled: boolean; hit_count: number; created_at: string; updated_at: string;
 }
 
 export interface RetrievalResult {
   segment_id: string; document_id: string; document_name: string; content: string; position: number; score: number;
+  keyword_score: number; vector_score: number; metadata: Record<string, unknown>;
+}
+
+export interface MetadataFilterCondition {
+  key: string; operator: "equals" | "not_equals" | "contains" | "in" | "exists"; value?: unknown;
 }
