@@ -104,6 +104,15 @@ export interface PluginCatalogItem {
   has_credentials: boolean;
 }
 
+export interface DifyToolProvider {
+  plugin_id: string;
+  provider_name: string;
+  name: string;
+  description: string;
+  icon: string;
+  tools: ToolDeclaration[];
+}
+
 export interface Dataset {
   id: string; workspace_id: string; name: string; description: string; icon: string;
   indexing_technique: string; search_method: string; top_k: number; score_threshold: number;

@@ -14,8 +14,27 @@ export function PluginMarketplace({ workspaceId, onError }: { workspaceId: strin
   const uploadRef = useRef<HTMLInputElement>(null);
   const [marketPlugins, setMarketPlugins] = useState<Array<{ org: string; name: string; label: string; description: string; category: string; icon_url: string; install_count: number; verified: boolean; version: string; identifier: string }>>([]);
   const [category, setCategory] = useState("all");
+  const [installedIds, setInstalledIds] = useState<string[]>([]);
+  const [installingIds, setInstallingIds] = useState<string[]>([]);
+  const pollAttempts = useRef(0);
+
+  async function refreshInstalled() {
+    const result = await api.listInstalledDifyPlugins(workspaceId);
+    setInstalledIds(result.plugin_ids);
+    setInstallingIds((items) => items.filter((id) => !result.plugin_ids.includes(id)));
+  }
 
   useEffect(() => { api.daemonStatus().then((result) => setDaemonAvailable(result.available)).catch(() => setDaemonAvailable(false)); }, []);
+  useEffect(() => { refreshInstalled().catch(onError); }, [workspaceId]);
+  useEffect(() => {
+    if (!installingIds.length) { pollAttempts.current = 0; return; }
+    const timer = window.setInterval(() => {
+      pollAttempts.current += 1;
+      refreshInstalled().catch(onError);
+      if (pollAttempts.current >= 24) setInstallingIds([]);
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [installingIds.length, workspaceId]);
   useEffect(() => {
     const timer = window.setTimeout(() => api.exploreMarketplace(query).then(setMarketPlugins).catch(onError), 250);
     return () => window.clearTimeout(timer);
@@ -35,11 +54,13 @@ export function PluginMarketplace({ workspaceId, onError }: { workspaceId: strin
   }
 
   async function installFromMarketplace(identifier: string) {
+    const pluginId = identifier.split(":", 1)[0];
+    setInstallingIds((items) => items.includes(pluginId) ? items : [...items, pluginId]);
     setBusy(identifier); setNotice("");
     try {
       const result = await api.installMarketplacePlugin(workspaceId, identifier);
       setNotice(`已提交安装：${result.identifier}。依赖初始化完成后会进入工作流节点库。`);
-    } catch (reason) { onError(reason); }
+    } catch (reason) { setInstallingIds((items) => items.filter((id) => id !== pluginId)); onError(reason); }
     finally { setBusy(""); }
   }
 
@@ -48,12 +69,13 @@ export function PluginMarketplace({ workspaceId, onError }: { workspaceId: strin
     {notice && <div className="marketplace-notice">{notice}</div>}
     <div className="marketplace-categories">{categories.map((item) => <button key={item.id} className={category === item.id ? "active" : ""} onClick={() => setCategory(item.id)}>{item.label}</button>)}</div>
     <div className="marketplace-section-title"><strong>探索 Marketplace</strong><span>{visibleMarketPlugins.length} 个结果</span></div>
-    <div className="marketplace-grid">{visibleMarketPlugins.map((item) => <article className="plugin-card market-card" key={item.identifier}>
+    <div className="marketplace-grid">{visibleMarketPlugins.map((item) => { const pluginId = `${item.org}/${item.name}`; const installed = installedIds.includes(pluginId); const installing = installingIds.includes(pluginId); return <article className={`plugin-card market-card ${installed ? "installed" : installing ? "installing" : ""}`} key={item.identifier}>
       <span className="plugin-category">{categories.find((entry) => entry.id === item.category)?.label ?? item.category}</span>
+      {(installed || installing) && <span className={`plugin-state ${installed ? "installed" : "installing"}`}>{installed ? "✓ 已安装" : "◌ 安装中"}</span>}
       <div className="plugin-card-head"><MarketplaceIcon src={item.icon_url} name={item.name} /><div><h3>{item.label} {item.verified && <span className="verified">✓</span>}</h3><p>{item.org}/{item.name} · v{item.version}</p></div></div>
       <p className="plugin-description">{item.description || "来自 Dify Marketplace"}</p>
       <div className="plugin-install-count">⇩ {item.install_count.toLocaleString()}</div>
-      <div className="plugin-actions"><button className="primary" onClick={() => installFromMarketplace(item.identifier)} disabled={!daemonAvailable || busy === item.identifier}>{busy === item.identifier ? "安装中…" : "安装"}</button></div>
-    </article>)}</div>
+      <div className="plugin-actions"><button className={installed ? "installed-button" : "primary"} onClick={() => installFromMarketplace(item.identifier)} disabled={installed || installing || !daemonAvailable || busy === item.identifier}>{installed ? "已安装" : installing || busy === item.identifier ? "安装中…" : "安装"}</button></div>
+    </article>; })}</div>
   </section>;
 }

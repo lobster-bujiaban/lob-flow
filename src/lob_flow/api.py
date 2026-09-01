@@ -57,6 +57,7 @@ def create_app(database: Database | None = None) -> FastAPI:
     dify_marketplace = DifyMarketplaceClient(dify_daemon)
     workflow_service.plugin_service = plugin_service
     workflow_service.knowledge_service = knowledge_service
+    workflow_service.dify_daemon = dify_daemon
     web_dist = Path(__file__).resolve().parents[2] / "web" / "dist"
 
     @asynccontextmanager
@@ -226,6 +227,14 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.get("/api/dify-plugin-daemon/status")
     def dify_plugin_daemon_status() -> dict[str, bool]:
         return {"available": dify_daemon.available()}
+
+    @application.get("/api/workspaces/{workspace_id}/dify-plugins/installed")
+    def installed_dify_plugins(workspace_id: str) -> dict[str, list[str]]:
+        return {"plugin_ids": dify_daemon.installed_plugin_ids(workspace_id)}
+
+    @application.get("/api/workspaces/{workspace_id}/dify-tools")
+    def installed_dify_tools(workspace_id: str) -> list[dict]:
+        return dify_daemon.normalized_tools(workspace_id)
 
     @application.get("/api/dify-marketplace/plugins")
     def explore_dify_marketplace(q: str = "", limit: int = 60) -> list[dict]:

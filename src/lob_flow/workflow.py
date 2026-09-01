@@ -78,6 +78,8 @@ def validate_and_sort(definition: WorkflowDefinition) -> list[WorkflowNode]:
             for key in ("plugin_id", "tool_name"):
                 if not node.config.get(key):
                     errors.append(f"Tool 节点 {node.id} 缺少 {key}")
+            if node.config.get("runtime") == "dify" and not node.config.get("provider_name"):
+                errors.append(f"Dify Tool 节点 {node.id} 缺少 provider_name")
         if node.type == "knowledge" and not node.config.get("dataset_id"):
             errors.append(f"Knowledge 节点 {node.id} 缺少 dataset_id")
     if errors:

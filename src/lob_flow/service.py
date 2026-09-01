@@ -243,6 +243,25 @@ class FlowService:
         config_id: str,
         request: ModelProviderConfigUpdate,
     ) -> ModelProviderConfig:
+        last_error: psycopg.OperationalError | None = None
+        for attempt in range(3):
+            try:
+                return self._update_model_provider_config_once(
+                    workspace_id, config_id, request
+                )
+            except psycopg.OperationalError as exc:
+                last_error = exc
+                if attempt < 2:
+                    sleep(0.4 * (attempt + 1))
+        assert last_error is not None
+        raise last_error
+
+    def _update_model_provider_config_once(
+        self,
+        workspace_id: str,
+        config_id: str,
+        request: ModelProviderConfigUpdate,
+    ) -> ModelProviderConfig:
         self.get_model_provider_config(workspace_id, config_id)
         timestamp = now()
         with self.database.connect() as connection:
@@ -293,6 +312,18 @@ class FlowService:
         return self._app_from_row(row)
 
     def update_draft(self, app_id: str, draft: DraftDefinition) -> App:
+        last_error: psycopg.OperationalError | None = None
+        for attempt in range(3):
+            try:
+                return self._update_draft_once(app_id, draft)
+            except psycopg.OperationalError as exc:
+                last_error = exc
+                if attempt < 2:
+                    sleep(0.4 * (attempt + 1))
+        assert last_error is not None
+        raise last_error
+
+    def _update_draft_once(self, app_id: str, draft: DraftDefinition) -> App:
         app = self.get_app(app_id)
         self._validate_provider_reference(app.workspace_id, draft)
         timestamp = now()

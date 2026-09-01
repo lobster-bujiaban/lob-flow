@@ -7,6 +7,7 @@ from time import monotonic
 from uuid import uuid4
 
 from lob_flow.database import Database
+from lob_flow.dify_daemon import DifyDaemonClient
 from lob_flow.models import (
     DraftDefinition,
     ModelConfig,
@@ -30,6 +31,7 @@ class WorkflowService:
         self.model_gateway = model_gateway
         self.plugin_service: PluginService | None = None
         self.knowledge_service: KnowledgeService | None = None
+        self.dify_daemon: DifyDaemonClient | None = None
 
     def get_draft(self, app_id: str) -> WorkflowDraft:
         app = self._get_app(app_id)
@@ -167,11 +169,35 @@ class WorkflowService:
                             )
                     value = "".join(parts)
                 elif node.type == "tool":
-                    if self.plugin_service is None:
-                        raise PluginExecutionError("Plugin service is unavailable")
                     parameters = self._resolve_parameters(
                         node.config.get("parameters", {}), value
                     )
+                    if node.config.get("runtime") == "dify":
+                        if self.dify_daemon is None:
+                            raise PluginExecutionError("Dify Plugin Daemon is unavailable")
+                        value = self.dify_daemon.invoke_installed_tool(
+                            app["workspace_id"],
+                            str(node.config["plugin_id"]),
+                            str(node.config["provider_name"]),
+                            str(node.config["tool_name"]),
+                            parameters,
+                        )
+                        node_values[node.id] = value
+                        node_duration = int((monotonic() - node_started) * 1000)
+                        node_output = {"value": value}
+                        with self.database.connect() as connection:
+                            connection.execute(
+                                """UPDATE node_runs SET status = 'succeeded', output_json = %s,
+                                   finished_at = %s, duration_ms = %s WHERE id = %s""",
+                                (json.dumps(node_output, ensure_ascii=False), now().isoformat(), node_duration, node_run_id),
+                            )
+                        sequence += 1
+                        yield self._event(run_id, sequence, "node_succeeded", node.id, {"output": node_output, "duration_ms": node_duration})
+                        current_node_id = None
+                        current_node_run_id = None
+                        continue
+                    if self.plugin_service is None:
+                        raise PluginExecutionError("Plugin service is unavailable")
                     invocation_id = str(uuid4())
                     invocation_started = now()
                     invocation_clock = monotonic()

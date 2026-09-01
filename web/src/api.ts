@@ -1,4 +1,4 @@
-import type { App, AppType, Dataset, DatasetDocument, DocumentSegment, DraftDefinition, PluginCatalogItem, ProviderConfig, RetrievalResult, RunEvent, WorkflowDefinition, WorkflowDraft, WorkflowEvent, Workspace } from "./types";
+import type { App, AppType, Dataset, DatasetDocument, DifyToolProvider, DocumentSegment, DraftDefinition, PluginCatalogItem, ProviderConfig, RetrievalResult, RunEvent, WorkflowDefinition, WorkflowDraft, WorkflowEvent, Workspace } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -70,6 +70,10 @@ export const api = {
   listPlugins: (workspaceId: string) =>
     request<PluginCatalogItem[]>(`/api/workspaces/${workspaceId}/plugins`),
   daemonStatus: () => request<{ available: boolean }>("/api/dify-plugin-daemon/status"),
+  listInstalledDifyPlugins: (workspaceId: string) =>
+    request<{ plugin_ids: string[] }>(`/api/workspaces/${workspaceId}/dify-plugins/installed`),
+  listDifyTools: (workspaceId: string) =>
+    request<DifyToolProvider[]>(`/api/workspaces/${workspaceId}/dify-tools`),
   exploreMarketplace: (query = "") =>
     request<Array<{ org: string; name: string; label: string; description: string; category: string; icon_url: string; install_count: number; verified: boolean; version: string; identifier: string; updated_at: string }>>(`/api/dify-marketplace/plugins?q=${encodeURIComponent(query)}&limit=36`),
   installMarketplacePlugin: (workspaceId: string, identifier: string) =>
