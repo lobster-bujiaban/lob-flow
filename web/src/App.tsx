@@ -42,6 +42,9 @@ export function App() {
   const [showCreateApp, setShowCreateApp] = useState(false);
   const [editingApp, setEditingApp] = useState<FlowApp | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<FlowApp | null>(null);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [showCreateWorkspace, setShowCreateWorkspace] = useState(false);
+  const [showDeleteWorkspace, setShowDeleteWorkspace] = useState(false);
   const [importTarget, setImportTarget] = useState<FlowApp | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
 
@@ -71,13 +74,15 @@ export function App() {
     setError(message.includes("provider_config_missing") ? "请先配置真实模型供应商和 API Key，再运行应用。" : message);
   }
 
-  async function createWorkspace() {
-    const name = window.prompt("空间名称");
-    if (!name?.trim()) return;
+  async function createWorkspace(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = String(new FormData(event.currentTarget).get("name") ?? "").trim();
+    if (!name) return;
     try {
       const created = await api.createWorkspace(name.trim());
       setWorkspaces((items) => [...items, created]);
       setWorkspaceId(created.id);
+      setShowCreateWorkspace(false);
       setError("");
     } catch (reason) { showError(reason); }
   }
@@ -103,7 +108,7 @@ export function App() {
 
   async function deleteWorkspace() {
     const workspace = workspaces.find((item) => item.id === workspaceId);
-    if (!workspace || !window.confirm(`确定删除空间“${workspace.name}”吗？\n该空间内的应用、工作流、运行记录和插件配置都会永久删除。`)) return;
+    if (!workspace) return;
     try {
       await api.deleteWorkspace(workspace.id);
       const remaining = workspaces.filter((item) => item.id !== workspace.id);
@@ -111,6 +116,7 @@ export function App() {
       setWorkspaceId(remaining[0]?.id ?? "");
       setApps([]);
       setAppId("");
+      setShowDeleteWorkspace(false);
       setError("");
     } catch (reason) { showError(reason); }
   }
@@ -190,14 +196,14 @@ export function App() {
   return (
     <div className="dify-shell">
       <header className="global-header">
-        <div className="global-brand"><img src={lobsterLogo} alt="LOB" /><strong>LOB Flow</strong><span>/</span><select value={workspaceId} onChange={(event) => { setWorkspaceId(event.target.value); setTab("studio"); }}><option value="">选择空间</option>{workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}</select><button onClick={createWorkspace} title="新建空间">＋</button></div>
+        <div className="global-brand"><img src={lobsterLogo} alt="LOB" /><strong>LOB Flow</strong><span>/</span><div className="workspace-picker"><button className="workspace-picker-trigger" onClick={() => setWorkspaceMenuOpen((open) => !open)}><span>{workspaces.find((item) => item.id === workspaceId)?.name ?? "选择空间"}</span><i>⌄</i></button>{workspaceMenuOpen && <div className="workspace-menu"><small>空间</small>{workspaces.map((workspace) => <button key={workspace.id} className={workspace.id === workspaceId ? "active" : ""} onClick={() => { setWorkspaceId(workspace.id); setTab("studio"); setWorkspaceMenuOpen(false); }}><i>{workspace.name.slice(0, 1).toUpperCase()}</i><span>{workspace.name}</span>{workspace.id === workspaceId && <b>✓</b>}</button>)}<div className="workspace-menu-actions"><button onClick={() => { setShowCreateWorkspace(true); setWorkspaceMenuOpen(false); }}>＋ 新建空间</button><button className="danger" disabled={!workspaceId} onClick={() => { setShowDeleteWorkspace(true); setWorkspaceMenuOpen(false); }}>删除当前空间</button></div></div>}</div></div>
         <nav className="global-nav"><button className={tab === "studio" ? "active" : ""} onClick={() => setTab("studio")}>▦ 工作室</button><button className={tab === "knowledge" ? "active" : ""} onClick={() => setTab("knowledge")}>▤ 知识库</button><button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>T 工具</button></nav>
         <div className="global-actions"><button className={tab === "plugins" ? "active" : ""} onClick={() => setTab("plugins")}>◈ 插件</button><button className="user-avatar-top">LOB</button></div>
       </header>
       <main className="main">
         {activeApp && ["chat", "workflow", "api", "logs", "settings"].includes(tab) && <header className="app-header"><button className="app-back" onClick={() => setTab("studio")}>←</button><div className="app-header-title"><span>{appTypes.find((type) => type.id === activeApp.app_type)?.icon}</span><div><strong>{activeApp.name}</strong><small>{appTypes.find((type) => type.id === activeApp.app_type)?.label}</small></div></div><nav><button className={tab === "chat" ? "active" : ""} onClick={() => setTab("chat")}>调试</button><button className={tab === "workflow" ? "active" : ""} onClick={() => setTab("workflow")}>工作流</button><button className={tab === "api" ? "active" : ""} onClick={() => setTab("api")}>访问 API</button><button className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>日志</button><button className={tab === "settings" ? "active" : ""} onClick={() => setTab("settings")}>模型设置</button></nav></header>}
         {error && <div className="error-banner"><span>{error}</span><button onClick={() => setError("")}>×</button></div>}
-        {tab === "studio" ? <Studio apps={visibleApps} allApps={apps} filter={appFilter} setFilter={setAppFilter} onCreate={createApp} onImport={() => { setImportTarget(null); importRef.current?.click(); }} onImportInto={(app) => { if (window.confirm(`导入 DSL 将覆盖“${app.name}”当前的工作流草稿，是否继续？`)) { setImportTarget(app); importRef.current?.click(); } }} onOpen={openApp} onEdit={setEditingApp} onDuplicate={duplicateApp} onExport={exportDsl} onDelete={setDeleteTarget} onDeleteWorkspace={deleteWorkspace} disabled={!workspaceId} /> : tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : tab === "tools" ? <ToolsLibrary workspaceId={workspaceId} onError={showError} /> : tab === "plugins" ? <PluginMarketplace workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
+        {tab === "studio" ? <Studio apps={visibleApps} allApps={apps} filter={appFilter} setFilter={setAppFilter} onCreate={createApp} onImport={() => { setImportTarget(null); importRef.current?.click(); }} onImportInto={(app) => { if (window.confirm(`导入 DSL 将覆盖“${app.name}”当前的工作流草稿，是否继续？`)) { setImportTarget(app); importRef.current?.click(); } }} onOpen={openApp} onEdit={setEditingApp} onDuplicate={duplicateApp} onExport={exportDsl} onDelete={setDeleteTarget} onDeleteWorkspace={() => setShowDeleteWorkspace(true)} disabled={!workspaceId} /> : tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : tab === "tools" ? <ToolsLibrary workspaceId={workspaceId} onError={showError} /> : tab === "plugins" ? <PluginMarketplace workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
           <ChatPanel app={activeApp} providers={providers} onSettings={() => setTab("settings")} onError={showError} />
         ) : tab === "workflow" ? (
           <WorkflowCanvas app={activeApp} workspaceId={workspaceId} providers={providers} onError={showError} />
@@ -217,6 +223,8 @@ export function App() {
         )}
       </main>
       <input ref={importRef} className="file-input" type="file" accept=".json,.lobflow.json,application/json" onChange={importDsl} />
+      {showCreateWorkspace && <div className="modal-backdrop" onClick={() => setShowCreateWorkspace(false)}><form className="modal workspace-create-modal" onSubmit={createWorkspace} onClick={(event) => event.stopPropagation()}><div className="modal-head"><div><h3>新建空间</h3><p>空间用于隔离应用、知识库、插件和运行记录。</p></div><button type="button" onClick={() => setShowCreateWorkspace(false)}>×</button></div><label>空间名称</label><input name="name" required autoFocus maxLength={100} placeholder="例如：产品研发团队" /><div className="workspace-modal-actions"><button type="button" onClick={() => setShowCreateWorkspace(false)}>取消</button><button className="primary">创建空间</button></div></form></div>}
+      {showDeleteWorkspace && <div className="modal-backdrop" onClick={() => setShowDeleteWorkspace(false)}><div className="modal confirm-modal workspace-delete-modal" onClick={(event) => event.stopPropagation()}><div className="confirm-icon">!</div><h3>删除空间“{workspaces.find((item) => item.id === workspaceId)?.name}”？</h3><p>空间内的应用、工作流、运行记录和插件配置都会永久删除。此操作无法撤销。</p><div className="confirm-actions"><button onClick={() => setShowDeleteWorkspace(false)}>取消</button><button className="confirm-delete" onClick={deleteWorkspace}>确认删除</button></div></div></div>}
       {showCreateApp && <div className="modal-backdrop"><form className="modal app-create-modal" onSubmit={submitCreateApp}><div className="modal-head"><div><h3>创建应用</h3><p>应用类型决定默认运行方式，创建后仍可使用工作流编排。</p></div><button type="button" onClick={() => setShowCreateApp(false)}>×</button></div><label>应用名称</label><input name="name" required autoFocus placeholder="例如：客户支持 Agent" /><label>应用类型</label><div className="app-type-options">{appTypes.map((type, index) => <label key={type.id}><input type="radio" name="app_type" value={type.id} defaultChecked={index === 1} /><span><i>{type.icon}</i><strong>{type.label}</strong><small>{type.description}</small></span></label>)}</div><button className="primary wide">创建应用</button></form></div>}
       {editingApp && <div className="modal-backdrop"><form className="modal" onSubmit={submitEditApp}><div className="modal-head"><div><h3>编辑应用信息</h3><p>修改名称、描述和应用分类。</p></div><button type="button" onClick={() => setEditingApp(null)}>×</button></div><label>应用名称</label><input name="name" defaultValue={editingApp.name} required /><label>应用类型</label><select name="app_type" defaultValue={editingApp.app_type}>{appTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}</select><label>应用描述</label><textarea name="description" rows={4} defaultValue={editingApp.description} /><button className="primary wide">保存修改</button></form></div>}
       {deleteTarget && <div className="modal-backdrop"><div className="modal confirm-modal"><div className="confirm-icon">!</div><h3>删除应用“{deleteTarget.name}”？</h3><p>相关工作流、运行记录和事件都会永久删除，此操作无法撤销。</p><div className="confirm-actions"><button onClick={() => setDeleteTarget(null)}>取消</button><button className="confirm-delete" onClick={() => deleteApp(deleteTarget)}>确认删除</button></div></div></div>}

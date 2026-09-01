@@ -19,7 +19,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { api } from "./api";
-import type { App, Dataset, DifyToolProvider, PluginCatalogItem, ProviderConfig, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowNodeType, WorkflowVersion } from "./types";
+import type { App, Dataset, DifyToolProvider, PluginCatalogItem, ProviderConfig, ScheduleTrigger, ScheduleTriggerInput, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowNodeType, WorkflowVersion } from "./types";
 
 type CanvasData = {
   workflow: WorkflowNode;
@@ -70,6 +70,8 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
   const [lastSaved, setLastSaved] = useState("");
   const [versions, setVersions] = useState<WorkflowVersion[]>([]);
   const [showVersions, setShowVersions] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleTriggers, setScheduleTriggers] = useState<ScheduleTrigger[]>([]);
 
   useEffect(() => {
     api.getWorkflow(app.id).then((draft) => loadDefinition(draft.definition)).catch(onError);
@@ -77,6 +79,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
   useEffect(() => { api.listPlugins(workspaceId).then(setPlugins).catch(onError); }, [workspaceId]);
   useEffect(() => { api.listDatasets(workspaceId).then(setDatasets).catch(onError); }, [workspaceId]);
   useEffect(() => { api.listDifyTools(workspaceId).then(setDifyTools).catch(onError); }, [workspaceId]);
+  useEffect(() => { api.listScheduleTriggers(app.id).then(setScheduleTriggers).catch(onError); }, [app.id]);
 
   function loadDefinition(definition: WorkflowDefinition) {
     setNodes(definition.nodes.map((workflow, index) => ({
@@ -109,7 +112,8 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
     markerEnd: { type: MarkerType.ArrowClosed }
   }, current)), [setEdges]);
 
-  function addNode(type: Exclude<WorkflowNodeType, "start">, selectedPlugin?: PluginCatalogItem, selectedToolName?: string, selectedDify?: DifyToolProvider) {
+  function addNode(type: WorkflowNodeType, selectedPlugin?: PluginCatalogItem, selectedToolName?: string, selectedDify?: DifyToolProvider, selectedDataset?: Dataset) {
+    if (type === "start" && nodes.some((node) => node.data.workflow.type === "start")) return;
     const id = `${type}-${crypto.randomUUID().slice(0, 8)}`;
     const config = type === "template"
       ? { template: "{input}" }
@@ -118,15 +122,15 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
         : type === "tool"
           ? (() => { if (selectedDify) { const tool = selectedDify.tools.find((item) => item.name === selectedToolName) ?? selectedDify.tools[0]; return { runtime: "dify", plugin_id: selectedDify.plugin_id, provider_name: selectedDify.provider_name, tool_name: tool?.name ?? "", credential_schema: selectedDify.credential_schema ?? {}, credentials: {}, parameters: Object.fromEntries(Object.keys(tool?.parameters ?? {}).map((key) => [key, key === "text" || key === "body" ? "{input}" : ""])) }; } const plugin = selectedPlugin ?? plugins.find((item) => item.installed && item.enabled); const tool = plugin?.manifest.tools.find((item) => item.name === selectedToolName) ?? plugin?.manifest.tools[0]; return { runtime: "builtin", plugin_id: plugin?.manifest.plugin_id ?? "", tool_name: tool?.name ?? "", parameters: Object.fromEntries(Object.keys(tool?.parameters ?? {}).map((key) => [key, key === "text" || key === "json" ? "{input}" : ""])) }; })()
         : type === "knowledge"
-          ? { dataset_id: datasets[0]?.id ?? "", query: "{input}", top_k: 3, score_threshold: 0 }
+          ? { dataset_id: selectedDataset?.id ?? datasets[0]?.id ?? "", query: "{input}", top_k: 3, score_threshold: 0 }
           : {};
     const tool = type === "tool" ? (selectedDify?.tools.find((item) => item.name === selectedToolName) ?? selectedPlugin?.manifest.tools.find((item) => item.name === selectedToolName)) : undefined;
     const node: CanvasNode = {
       id,
       type: "workflow",
       position: { x: 360 + nodes.length * 35, y: 160 + nodes.length * 35 },
-      data: { workflow: { id, type, name: tool?.label ?? labels[type], config, position: {} } },
-      deletable: true
+      data: { workflow: { id, type, name: selectedDataset ? `检索 · ${selectedDataset.name}` : tool?.label ?? labels[type], config, position: {} } },
+      deletable: type !== "start"
     };
     setNodes((current) => [...current, node]);
     setSelectedId(id);
@@ -246,9 +250,9 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
           <Controls />
         </ReactFlow>
         <div className="flow-palette"><button className={paletteOpen ? "active" : ""} onClick={() => setPaletteOpen((open) => !open)} title="添加节点">＋</button><button onClick={() => setPanelMode("run")} title="测试运行">▷</button></div>
-        {paletteOpen && <UnifiedNodeLibrary plugins={plugins} difyTools={difyTools} addNode={addNode} selectStart={() => {
+        {paletteOpen && <UnifiedNodeLibrary plugins={plugins} difyTools={difyTools} datasets={datasets} addNode={addNode} scheduleCount={scheduleTriggers.length} openSchedules={() => { setPaletteOpen(false); setScheduleOpen(true); }} selectStart={() => {
           const start = nodes.find((node) => node.data.workflow.type === "start");
-          if (!start) return;
+          if (!start) { addNode("start"); return; }
           setSelectedId(start.id);
           setPanelMode("node");
           setPaletteOpen(false);
@@ -257,11 +261,12 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
       {panelMode && <aside className="flow-inspector"><button className="inspector-close" onClick={() => { setPanelMode(null); setSelectedId(null); }}>×</button>{panelMode === "node" && selected ? <NodeInspector node={selected.data.workflow} providers={providers} plugins={plugins} difyTools={difyTools} datasets={datasets} update={updateSelected} remove={deleteSelected} runNode={() => runSelectedNode(selected.id)} running={running} /> : <RunInspector input={input} setInput={setInput} run={run} running={running} answer={answer} />}</aside>}
     </div>
     {showVersions && <div className="modal-backdrop"><div className="modal workflow-version-modal"><div className="modal-head"><div><h3>发布版本</h3><p>API 执行最新发布版本；恢复后需重新发布才会生效。</p></div><button onClick={() => setShowVersions(false)}>×</button></div>{versions.map((version) => <div className="workflow-version-row" key={version.id}><div><strong>v{version.version}</strong><small>{new Date(version.created_at).toLocaleString()}</small></div><button onClick={() => rollback(version)}>恢复为草稿</button></div>)}{!versions.length && <p className="inspector-hint">尚未发布任何版本。</p>}</div></div>}
+    {scheduleOpen && <ScheduleManagerModal appId={app.id} triggers={scheduleTriggers} onChange={setScheduleTriggers} close={() => setScheduleOpen(false)} onError={onError} />}
   </section>;
 }
 
-function UnifiedNodeLibrary({ plugins, difyTools, addNode, selectStart, close }: { plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; addNode: (type: Exclude<WorkflowNodeType, "start">, plugin?: PluginCatalogItem, toolName?: string, dify?: DifyToolProvider) => void; selectStart: () => void; close: () => void }) {
-  const [tab, setTab] = useState<"nodes" | "tools" | "start">("nodes");
+function UnifiedNodeLibrary({ plugins, difyTools, datasets, addNode, selectStart, openSchedules, scheduleCount, close }: { plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; datasets: Dataset[]; addNode: (type: WorkflowNodeType, plugin?: PluginCatalogItem, toolName?: string, dify?: DifyToolProvider, dataset?: Dataset) => void; selectStart: () => void; openSchedules: () => void; scheduleCount: number; close: () => void }) {
+  const [tab, setTab] = useState<"nodes" | "knowledge" | "tools" | "start">("nodes");
   const [query, setQuery] = useState("");
   const [hoveredTrigger, setHoveredTrigger] = useState("user-input");
   const needle = query.trim().toLowerCase();
@@ -274,18 +279,77 @@ function UnifiedNodeLibrary({ plugins, difyTools, addNode, selectStart, close }:
   ] satisfies Array<{ type: Exclude<WorkflowNodeType, "start">; icon: string; label: string; description: string; group: string }>).filter((item) => !needle || `${item.label}${item.description}`.toLowerCase().includes(needle));
   const triggers = [
     { id: "user-input", icon: "⌁", label: "用户输入", badge: "最常用", description: "定义当工作流按需启动时，需要向终端用户收集的输入。", author: "LOB Flow", enabled: true },
-    { id: "schedule", icon: "◷", label: "定时触发器", badge: "即将支持", description: "按照预设的时间计划自动启动工作流。", author: "LOB Flow", enabled: false },
+    { id: "schedule", icon: "◷", label: "定时触发器", badge: scheduleCount ? `已配置 ${scheduleCount}` : "可配置", description: "按照预设的时间计划，使用最新发布版本自动启动工作流。", author: "LOB Flow", enabled: true },
     { id: "webhook", icon: "⌘", label: "Webhook 触发器", badge: "即将支持", description: "收到外部系统的 Webhook 请求时启动工作流。", author: "LOB Flow", enabled: false }
   ].filter((item) => !needle || `${item.label}${item.description}`.toLowerCase().includes(needle));
   const activeTrigger = triggers.find((item) => item.id === hoveredTrigger);
   return <div className="unified-node-library">
-    <header><nav><button className={tab === "nodes" ? "active" : ""} onClick={() => setTab("nodes")}>节点</button><button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>工具</button><button className={tab === "start" ? "active" : ""} onClick={() => setTab("start")}>开始</button></nav><button onClick={close}>×</button></header>
-    <div className="node-library-search">⌕<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === "tools" ? "搜索已安装工具" : tab === "start" ? "搜索触发器…" : "搜索节点"} /></div>
+    <header><nav><button className={tab === "nodes" ? "active" : ""} onClick={() => setTab("nodes")}>节点</button><button className={tab === "knowledge" ? "active" : ""} onClick={() => setTab("knowledge")}>知识库</button><button className={tab === "tools" ? "active" : ""} onClick={() => setTab("tools")}>工具</button><button className={tab === "start" ? "active" : ""} onClick={() => setTab("start")}>开始</button></nav><button onClick={close}>×</button></header>
+    <div className="node-library-search">⌕<input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === "tools" ? "搜索已安装工具" : tab === "knowledge" ? "搜索知识库" : tab === "start" ? "搜索触发器…" : "搜索节点"} /></div>
     {tab === "nodes" && <div className="node-library-scroll">{["基础", "转换"].map((group) => { const items = nodeItems.filter((item) => item.group === group); return items.length ? <section key={group}><strong>{group}</strong>{items.map((item) => <button key={item.type} onClick={() => addNode(item.type)}><i>{item.icon}</i><span><b>{item.label}</b><small>{item.description}</small></span></button>)}</section> : null; })}</div>}
+    {tab === "knowledge" && <div className="node-library-scroll knowledge-node-library"><section><strong>当前空间的知识库</strong>{datasets.filter((dataset) => !needle || `${dataset.name}${dataset.description}`.toLowerCase().includes(needle)).map((dataset) => <button key={dataset.id} onClick={() => addNode("knowledge", undefined, undefined, undefined, dataset)}><i>{dataset.icon}</i><span><b>{dataset.name}</b><small>{dataset.document_count} 文档 · {dataset.segment_count} 分段</small></span></button>)}{!datasets.length && <p>还没有知识库，请先在顶部“知识库”中创建并添加文档。</p>}</section></div>}
     {tab === "tools" && <div className="node-library-scroll tool-library-scroll">{difyTools.map((provider) => { const tools = provider.tools.filter((tool) => !needle || `${tool.label}${tool.description}`.toLowerCase().includes(needle)); return tools.length ? <section key={provider.plugin_id}><strong>{provider.name}<em>Daemon</em></strong>{tools.map((tool) => <button key={tool.name} onClick={() => addNode("tool", undefined, tool.name, provider)}><i>{provider.name.slice(0, 2)}</i><span><b>{tool.label}</b><small>{tool.description}</small></span></button>)}</section> : null; })}{builtin.map((plugin) => { const tools = plugin.manifest.tools.filter((tool) => !needle || `${tool.label}${tool.description}`.toLowerCase().includes(needle)); return tools.length ? <section key={plugin.manifest.plugin_id}><strong>{plugin.manifest.name}<em>LOB</em></strong>{tools.map((tool) => <button key={tool.name} onClick={() => addNode("tool", plugin, tool.name)}><i>{plugin.manifest.icon}</i><span><b>{tool.label}</b><small>{tool.description}</small></span></button>)}</section> : null; })}{!difyTools.length && !builtin.length && <p>还没有已安装工具，请先到插件市场安装。</p>}</div>}
-    {tab === "start" && <div className="start-trigger-list">{triggers.map((item) => <button key={item.id} className={!item.enabled ? "disabled" : ""} onMouseEnter={() => setHoveredTrigger(item.id)} onFocus={() => setHoveredTrigger(item.id)} onClick={item.enabled ? selectStart : undefined}><i>{item.icon}</i><span>{item.label}</span><em>{item.badge}</em></button>)}{!triggers.length && <p>没有匹配的触发器</p>}</div>}
+    {tab === "start" && <div className="start-trigger-list">{triggers.map((item) => <button key={item.id} className={!item.enabled ? "disabled" : ""} onMouseEnter={() => setHoveredTrigger(item.id)} onFocus={() => setHoveredTrigger(item.id)} onClick={item.id === "user-input" ? selectStart : item.id === "schedule" ? openSchedules : undefined}><i>{item.icon}</i><span>{item.label}</span><em>{item.badge}</em></button>)}{!triggers.length && <p>没有匹配的触发器</p>}</div>}
     {tab === "start" && activeTrigger && <aside className="start-trigger-tip"><i>{activeTrigger.icon}</i><strong>{activeTrigger.label}</strong><p>{activeTrigger.description}</p><small>作者 {activeTrigger.author}</small></aside>}
   </div>;
+}
+
+const emptySchedule: ScheduleTriggerInput = { name: "定时触发器", cron: "0 9 * * 1-5", timezone: "Asia/Shanghai", input: "请执行定时工作流", enabled: false };
+
+function ScheduleManagerModal({ appId, triggers, onChange, close, onError }: { appId: string; triggers: ScheduleTrigger[]; onChange: (items: ScheduleTrigger[]) => void; close: () => void; onError: (reason: unknown) => void }) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<ScheduleTriggerInput>(emptySchedule);
+  const [saving, setSaving] = useState(false);
+  const editing = triggers.find((item) => item.id === editingId);
+
+  function edit(item?: ScheduleTrigger) {
+    setEditingId(item?.id ?? "");
+    setForm(item ? { name: item.name, cron: item.cron, timezone: item.timezone, input: item.input, enabled: item.enabled } : { ...emptySchedule });
+  }
+  async function refresh() { onChange(await api.listScheduleTriggers(appId)); }
+  async function saveTrigger() {
+    if (!form.name.trim() || !form.cron.trim() || !form.input.trim()) return;
+    setSaving(true);
+    try {
+      if (editing) await api.updateScheduleTrigger(appId, editing.id, form);
+      else await api.createScheduleTrigger(appId, form);
+      await refresh();
+      setEditingId(null);
+    } catch (reason) { onError(reason); }
+    finally { setSaving(false); }
+  }
+  async function toggle(item: ScheduleTrigger) {
+    try {
+      await api.updateScheduleTrigger(appId, item.id, { name: item.name, cron: item.cron, timezone: item.timezone, input: item.input, enabled: !item.enabled });
+      await refresh();
+    } catch (reason) { onError(reason); }
+  }
+  async function remove(item: ScheduleTrigger) {
+    if (!confirm(`删除定时触发器“${item.name}”？`)) return;
+    try { await api.deleteScheduleTrigger(appId, item.id); await refresh(); if (editingId === item.id) setEditingId(null); }
+    catch (reason) { onError(reason); }
+  }
+
+  return <div className="modal-backdrop schedule-modal-backdrop" onClick={close}><div className="modal schedule-modal" onClick={(event) => event.stopPropagation()}>
+    <div className="modal-head"><div><h3>定时触发器</h3><p>按照计划自动执行最新发布的工作流版本。</p></div><button onClick={close}>×</button></div>
+    {editingId === null ? <>
+      <div className="schedule-toolbar"><span>{triggers.length} 个计划</span><button className="primary" onClick={() => edit()}>＋ 新建计划</button></div>
+      <div className="schedule-list">{triggers.map((item) => <article key={item.id}>
+        <i>◷</i><div><strong>{item.name}</strong><code>{item.cron}</code><small>{item.timezone} · {item.next_trigger_at ? `下次 ${new Date(item.next_trigger_at).toLocaleString()}` : "已暂停"}</small>{item.last_error && <em title={item.last_error}>上次执行失败：{item.last_error}</em>}</div>
+        <button className={item.enabled ? "schedule-switch active" : "schedule-switch"} onClick={() => toggle(item)}>{item.enabled ? "已启用" : "已暂停"}</button>
+        <button onClick={() => edit(item)}>编辑</button><button className="row-delete" onClick={() => remove(item)}>删除</button>
+      </article>)}{!triggers.length && <div className="schedule-empty"><span>◷</span><strong>还没有定时计划</strong><p>创建计划后，可以按分钟、每天或每周自动运行工作流。</p><button className="primary" onClick={() => edit()}>创建第一个计划</button></div>}</div>
+    </> : <div className="schedule-form">
+      <button className="schedule-back" onClick={() => setEditingId(null)}>← 返回计划列表</button>
+      <label>名称<input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
+      <label>执行频率<select value={form.cron} onChange={(event) => setForm({ ...form, cron: event.target.value })}><option value="*/5 * * * *">每 5 分钟</option><option value="0 * * * *">每小时</option><option value="0 9 * * *">每天 09:00</option><option value="0 9 * * 1-5">工作日 09:00</option><option value="0 9 * * 1">每周一 09:00</option><option value={form.cron}>自定义 Cron：{form.cron}</option></select></label>
+      <label>Cron 表达式<input value={form.cron} onChange={(event) => setForm({ ...form, cron: event.target.value })} placeholder="0 9 * * 1-5" /><small>使用标准 5 段 Cron：分钟 小时 日期 月份 星期</small></label>
+      <label>时区<select value={form.timezone} onChange={(event) => setForm({ ...form, timezone: event.target.value })}><option value="Asia/Shanghai">Asia/Shanghai</option><option value="UTC">UTC</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="America/New_York">America/New_York</option><option value="Europe/London">Europe/London</option></select></label>
+      <label>工作流输入<textarea rows={5} value={form.input} onChange={(event) => setForm({ ...form, input: event.target.value })} placeholder="定时运行时传入开始节点的内容" /></label>
+      <label className="schedule-enabled"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} /><span><strong>保存后立即启用</strong><small>启用前必须先发布工作流。</small></span></label>
+      <div className="schedule-form-actions"><button onClick={() => setEditingId(null)}>取消</button><button className="primary" disabled={saving || !form.name.trim() || !form.cron.trim() || !form.input.trim()} onClick={saveTrigger}>{saving ? "保存中…" : editing ? "保存修改" : "创建计划"}</button></div>
+    </div>}
+  </div></div>;
 }
 
 function NodeInspector({ node, providers, plugins, difyTools, datasets, update, remove, runNode, running }: { node: WorkflowNode; providers: ProviderConfig[]; plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; datasets: Dataset[]; update: (patch: Partial<WorkflowNode>, config?: Record<string, unknown>) => void; remove: () => void; runNode: () => void; running: boolean }) {

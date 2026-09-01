@@ -42,6 +42,9 @@ from lob_flow.models import (
     PluginCredential,
     PluginCredentialCreate,
     WorkflowVersion,
+    ScheduleTrigger,
+    ScheduleTriggerCreate,
+    ScheduleTriggerUpdate,
     PluginRuntimeState,
     Workspace,
     WorkspaceCreate,
@@ -52,6 +55,7 @@ from lob_flow.plugin_service import PluginService
 from lob_flow.service import FlowService, NotFoundError
 from lob_flow.workflow import WorkflowValidationError
 from lob_flow.workflow_service import WorkflowService
+from lob_flow.schedule_service import ScheduleService, ScheduleWorker
 
 
 def create_app(database: Database | None = None) -> FastAPI:
@@ -65,6 +69,8 @@ def create_app(database: Database | None = None) -> FastAPI:
     workflow_service.plugin_service = plugin_service
     workflow_service.knowledge_service = knowledge_service
     workflow_service.dify_daemon = dify_daemon
+    schedule_service = ScheduleService(database, workflow_service)
+    schedule_worker = ScheduleWorker(schedule_service)
     web_dist = Path(__file__).resolve().parents[2] / "web" / "dist"
 
     @asynccontextmanager
@@ -72,7 +78,11 @@ def create_app(database: Database | None = None) -> FastAPI:
         database.initialize()
         plugin_service.ensure_catalog()
         workflow_service.migrate_inline_credentials()
-        yield
+        schedule_worker.start()
+        try:
+            yield
+        finally:
+            schedule_worker.stop()
 
     application = FastAPI(title="LOB Flow", version="0.1.0", lifespan=lifespan)
     application.add_middleware(
@@ -389,6 +399,23 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.get("/api/apps/{app_id}/workflow-runs", response_model=list[WorkflowRun])
     def list_workflow_runs(app_id: str, limit: int = 100) -> list[WorkflowRun]:
         return workflow_service.list_runs(app_id, limit)
+
+    @application.get("/api/apps/{app_id}/schedule-triggers", response_model=list[ScheduleTrigger])
+    def list_schedule_triggers(app_id: str) -> list[ScheduleTrigger]:
+        return schedule_service.list(app_id)
+
+    @application.post("/api/apps/{app_id}/schedule-triggers", response_model=ScheduleTrigger, status_code=201)
+    def create_schedule_trigger(app_id: str, request: ScheduleTriggerCreate) -> ScheduleTrigger:
+        return schedule_service.create(app_id, request)
+
+    @application.put("/api/apps/{app_id}/schedule-triggers/{trigger_id}", response_model=ScheduleTrigger)
+    def update_schedule_trigger(app_id: str, trigger_id: str, request: ScheduleTriggerUpdate) -> ScheduleTrigger:
+        return schedule_service.update(app_id, trigger_id, request)
+
+    @application.delete("/api/apps/{app_id}/schedule-triggers/{trigger_id}", status_code=204)
+    def delete_schedule_trigger(app_id: str, trigger_id: str) -> Response:
+        schedule_service.delete(app_id, trigger_id)
+        return Response(status_code=204)
 
     @application.get("/api/apps/{app_id}/api-keys", response_model=list[ServiceApiKey])
     def list_service_api_keys(app_id: str) -> list[ServiceApiKey]:

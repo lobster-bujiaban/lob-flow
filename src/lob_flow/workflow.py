@@ -12,38 +12,7 @@ class WorkflowValidationError(ValueError):
 
 
 def default_workflow(draft: DraftDefinition) -> WorkflowDefinition:
-    return WorkflowDefinition(
-        nodes=[
-            WorkflowNode(id="start", type="start", name="开始", position={"x": 80, "y": 220}),
-            WorkflowNode(
-                id="template",
-                type="template",
-                name="Prompt 模板",
-                config={"template": draft.user_prompt_template},
-                position={"x": 340, "y": 220},
-            ),
-            WorkflowNode(
-                id="llm",
-                type="llm",
-                name="LLM",
-                config={
-                    "system_prompt": draft.system_prompt,
-                    "provider_config_id": draft.model.provider_config_id,
-                    "model": draft.model.model,
-                    "temperature": draft.model.temperature,
-                    "max_tokens": min(draft.model.max_tokens, 512),
-                    "timeout_seconds": draft.model.timeout_seconds,
-                },
-                position={"x": 620, "y": 220},
-            ),
-            WorkflowNode(id="answer", type="answer", name="回答", position={"x": 900, "y": 220}),
-        ],
-        edges=[
-            WorkflowEdge(source="start", target="template"),
-            WorkflowEdge(source="template", target="llm"),
-            WorkflowEdge(source="llm", target="answer"),
-        ],
-    )
+    return WorkflowDefinition(nodes=[], edges=[])
 
 
 def validate_and_sort(definition: WorkflowDefinition) -> list[WorkflowNode]:

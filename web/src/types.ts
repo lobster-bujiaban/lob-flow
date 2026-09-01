@@ -114,6 +114,23 @@ export interface WorkflowRun {
   trigger_source: string;
 }
 
+export interface ScheduleTrigger {
+  id: string;
+  app_id: string;
+  name: string;
+  cron: string;
+  timezone: string;
+  input: string;
+  enabled: boolean;
+  last_triggered_at: string | null;
+  next_trigger_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ScheduleTriggerInput = Pick<ScheduleTrigger, "name" | "cron" | "timezone" | "input" | "enabled">;
+
 export interface NodeRun {
   id: string;
   workflow_run_id: string;

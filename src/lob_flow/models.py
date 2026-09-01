@@ -200,6 +200,33 @@ class WorkflowRunCreate(BaseModel):
     input: str = Field(min_length=1, max_length=20_000)
 
 
+class ScheduleTriggerCreate(BaseModel):
+    name: str = Field(default="定时触发器", min_length=1, max_length=100)
+    cron: str = Field(min_length=5, max_length=100)
+    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=100)
+    input: str = Field(min_length=1, max_length=20_000)
+    enabled: bool = False
+
+
+class ScheduleTriggerUpdate(ScheduleTriggerCreate):
+    pass
+
+
+class ScheduleTrigger(BaseModel):
+    id: str
+    app_id: str
+    name: str
+    cron: str
+    timezone: str
+    input: str
+    enabled: bool
+    last_triggered_at: datetime | None = None
+    next_trigger_at: datetime | None = None
+    last_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class WorkflowRun(BaseModel):
     id: str
     app_id: str

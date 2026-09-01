@@ -1,4 +1,4 @@
-import type { App, AppType, Dataset, DatasetDocument, DifyToolProvider, DocumentSegment, DraftDefinition, NodeRun, PluginCatalogItem, PluginCredential, PluginRuntimeState, ProviderConfig, RetrievalResult, RunEvent, ServiceApiKey, WorkflowDefinition, WorkflowDraft, WorkflowEvent, WorkflowRun, WorkflowVersion, Workspace } from "./types";
+import type { App, AppType, Dataset, DatasetDocument, DifyToolProvider, DocumentSegment, DraftDefinition, NodeRun, PluginCatalogItem, PluginCredential, PluginRuntimeState, ProviderConfig, RetrievalResult, RunEvent, ScheduleTrigger, ScheduleTriggerInput, ServiceApiKey, WorkflowDefinition, WorkflowDraft, WorkflowEvent, WorkflowRun, WorkflowVersion, Workspace } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -119,6 +119,10 @@ export const api = {
   listPluginRuntimeStates: (workspaceId: string) => request<PluginRuntimeState[]>(`/api/workspaces/${workspaceId}/plugin-runtime-states`),
   setDifyPluginEnabled: (workspaceId: string, pluginId: string, enabled: boolean) => request<PluginRuntimeState>(`/api/workspaces/${workspaceId}/dify-plugins/${pluginId}/enabled`, { method: "PUT", body: JSON.stringify({ enabled }) }),
   listWorkflowRuns: (appId: string) => request<WorkflowRun[]>(`/api/apps/${appId}/workflow-runs`),
+  listScheduleTriggers: (appId: string) => request<ScheduleTrigger[]>(`/api/apps/${appId}/schedule-triggers`),
+  createScheduleTrigger: (appId: string, body: ScheduleTriggerInput) => request<ScheduleTrigger>(`/api/apps/${appId}/schedule-triggers`, { method: "POST", body: JSON.stringify(body) }),
+  updateScheduleTrigger: (appId: string, triggerId: string, body: ScheduleTriggerInput) => request<ScheduleTrigger>(`/api/apps/${appId}/schedule-triggers/${triggerId}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteScheduleTrigger: (appId: string, triggerId: string) => request<void>(`/api/apps/${appId}/schedule-triggers/${triggerId}`, { method: "DELETE" }),
   listWorkflowNodeRuns: (runId: string) => request<NodeRun[]>(`/api/workflow-runs/${runId}/nodes`),
   retryWorkflowRun: (runId: string) => request<WorkflowRun>(`/api/workflow-runs/${runId}/retry`, { method: "POST" }),
   listApiKeys: (appId: string) => request<ServiceApiKey[]>(`/api/apps/${appId}/api-keys`),

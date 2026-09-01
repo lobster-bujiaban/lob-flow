@@ -65,13 +65,7 @@ class WorkflowService:
         )
 
     def update_draft(self, app_id: str, definition: WorkflowDefinition) -> WorkflowDraft:
-        app = self._get_app(app_id)
-        validate_and_sort(definition)
-        for node in definition.nodes:
-            if node.type == "llm":
-                self._validate_provider(app["workspace_id"], node.config["provider_config_id"])
-            elif node.type == "knowledge":
-                self._validate_dataset(app["workspace_id"], str(node.config["dataset_id"]))
+        self._get_app(app_id)
         timestamp = now()
         with self.database.connect() as connection:
             connection.execute(
@@ -260,10 +254,11 @@ class WorkflowService:
                             score_threshold=float(node.config.get("score_threshold", 0)),
                         ),
                     )
-                    value = "\n\n".join(
+                    context = "\n\n".join(
                         f"[知识片段 {index} | {item.document_name} | score {item.score:.4f}]\n{item.content}"
                         for index, item in enumerate(response.results, 1)
                     )
+                    value = f"用户问题：{query}\n\n检索到的知识：\n{context or '未检索到相关知识片段'}"
 
                 node_values[node.id] = value
 
@@ -385,6 +380,12 @@ class WorkflowService:
     def publish(self, app_id: str) -> WorkflowVersion:
         draft = self.get_draft(app_id)
         validate_and_sort(draft.definition)
+        app = self._get_app(app_id)
+        for node in draft.definition.nodes:
+            if node.type == "llm":
+                self._validate_provider(app["workspace_id"], node.config["provider_config_id"])
+            elif node.type == "knowledge":
+                self._validate_dataset(app["workspace_id"], str(node.config["dataset_id"]))
         timestamp = now()
         with self.database.connect() as connection:
             row = connection.execute("SELECT COALESCE(MAX(version), 0) + 1 AS version FROM workflow_versions WHERE app_id = %s", (app_id,)).fetchone()
