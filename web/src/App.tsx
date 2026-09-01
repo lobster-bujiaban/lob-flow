@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
-import type { App as FlowApp, AppType, DraftDefinition, ProviderConfig, ServiceApiKey, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowRun, Workspace } from "./types";
+import type { App as FlowApp, AppType, DraftDefinition, NodeRun, ProviderConfig, ServiceApiKey, WorkflowDefinition, WorkflowEvent, WorkflowNode, WorkflowRun, Workspace } from "./types";
 import lobsterLogo from "./assets/lobster-logo.png";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { PluginMarketplace } from "./PluginMarketplace";
@@ -214,11 +214,26 @@ function AppLogsPanel({ app, onError }: { app: FlowApp; onError: (reason: unknow
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [status, setStatus] = useState("all");
   const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState<WorkflowRun | null>(null);
+  const [nodeRuns, setNodeRuns] = useState<NodeRun[]>([]);
   const load = () => api.listWorkflowRuns(app.id).then(setRuns).catch(onError);
   useEffect(() => { void load(); }, [app.id]);
+  async function openDetail(run: WorkflowRun) {
+    setSelected(run); setNodeRuns([]);
+    try { setNodeRuns(await api.listWorkflowNodeRuns(run.id)); } catch (reason) { onError(reason); }
+  }
   const visible = runs.filter((run) => (status === "all" || run.status === status) && `${run.input} ${run.output ?? ""} ${run.error ?? ""}`.toLowerCase().includes(query.toLowerCase()));
-  return <section className="app-feature-page logs-page"><div className="feature-heading"><div><h2>日志</h2><p>查看应用的工作流执行情况、触发来源和耗时。</p></div><button onClick={load}>↻ 刷新</button></div><div className="log-filters"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="running">运行中</option></select><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索输入、输出或错误" /></div><div className="log-table"><header><span>开始时间</span><span>状态</span><span>运行时间</span><span>触发方式</span><span>输入</span></header>{visible.map((run) => <div key={run.id}><span>{new Date(run.created_at).toLocaleString()}</span><span className={`run-status ${run.status}`}>{run.status === "succeeded" ? "SUCCESS" : run.status === "failed" ? "FAILED" : "RUNNING"}</span><span>{run.duration_ms == null ? "—" : `${(run.duration_ms / 1000).toFixed(3)}s`}</span><span>{run.trigger_source === "api" ? "⌘ API" : "▷ 调试"}</span><span title={run.input}>{run.input}</span></div>)}{!visible.length && <p>暂无符合条件的运行日志。</p>}</div></section>;
+  return <section className="app-feature-page logs-page"><div className="feature-heading"><div><h2>日志</h2><p>查看应用的工作流执行情况、触发来源和耗时。</p></div><button onClick={load}>↻ 刷新</button></div><div className="log-filters"><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">全部状态</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="running">运行中</option></select><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索输入、输出或错误" /></div><div className="log-table"><header><span>开始时间</span><span>状态</span><span>运行时间</span><span>触发方式</span><span>输入</span></header>{visible.map((run) => <div key={run.id} role="button" tabIndex={0} onClick={() => openDetail(run)} onKeyDown={(event) => { if (event.key === "Enter") openDetail(run); }}><span>{new Date(run.created_at).toLocaleString()}</span><span className={`run-status ${run.status}`}>{run.status === "succeeded" ? "SUCCESS" : run.status === "failed" ? "FAILED" : "RUNNING"}</span><span>{run.duration_ms == null ? "—" : `${(run.duration_ms / 1000).toFixed(3)}s`}</span><span>{run.trigger_source === "api" ? "⌘ API" : "▷ 调试"}</span><span title={run.input}>{run.input}</span></div>)}{!visible.length && <p>暂无符合条件的运行日志。</p>}</div>{selected && <RunDetailModal run={selected} nodes={nodeRuns} close={() => setSelected(null)} />}</section>;
 }
+
+function RunDetailModal({ run, nodes, close }: { run: WorkflowRun; nodes: NodeRun[]; close: () => void }) {
+  const [tab, setTab] = useState<"result" | "detail" | "trace">("trace");
+  const [expanded, setExpanded] = useState("");
+  const json = (value: unknown) => JSON.stringify(value, null, 2);
+  return <div className="run-detail-backdrop" onClick={close}><div className="run-detail-modal" onClick={(event) => event.stopPropagation()}><header><h3>日志详情</h3><button onClick={close}>×</button></header><nav><button className={tab === "result" ? "active" : ""} onClick={() => setTab("result")}>结果</button><button className={tab === "detail" ? "active" : ""} onClick={() => setTab("detail")}>详情</button><button className={tab === "trace" ? "active" : ""} onClick={() => setTab("trace")}>追踪</button></nav>{tab === "result" && <div className="run-result"><div className={`run-summary ${run.status}`}><span>状态<strong>{run.status.toUpperCase()}</strong></span><span>运行时间<strong>{run.duration_ms == null ? "—" : `${(run.duration_ms / 1000).toFixed(3)}s`}</strong></span><span>运行节点<strong>{nodes.length}</strong></span></div>{run.error ? <pre className="run-error">{run.error}</pre> : <pre>{run.output || "暂无输出"}</pre>}</div>}{tab === "detail" && <div className="run-detail-content"><div className={`run-summary ${run.status}`}><span>状态<strong>{run.status.toUpperCase()}</strong></span><span>运行时间<strong>{run.duration_ms == null ? "—" : `${(run.duration_ms / 1000).toFixed(3)}s`}</strong></span><span>触发方式<strong>{run.trigger_source === "api" ? "API" : "调试"}</strong></span></div><CodePanel title="输入" value={run.input} /><CodePanel title="输出" value={run.output ?? run.error ?? ""} /><dl><dt>运行 ID</dt><dd>{run.id}</dd><dt>开始时间</dt><dd>{new Date(run.created_at).toLocaleString()}</dd><dt>结束时间</dt><dd>{run.finished_at ? new Date(run.finished_at).toLocaleString() : "—"}</dd><dt>运行步数</dt><dd>{nodes.length}</dd></dl></div>}{tab === "trace" && <div className="run-trace">{nodes.map((node, index) => <section key={node.id} className={node.status}><button onClick={() => setExpanded((id) => id === node.id ? "" : node.id)}><i>{expanded === node.id ? "⌄" : "›"}</i><b>{index + 1}</b><strong>{node.node_type.toUpperCase()} · {node.node_id}</strong><span>{node.duration_ms == null ? "—" : `${node.duration_ms} ms`}</span><em>{node.status === "succeeded" ? "●" : node.status === "failed" ? "×" : "…"}</em></button>{expanded === node.id && <div><CodePanel title="输入" value={json(node.input)} /><CodePanel title="输出" value={node.error ?? json(node.output ?? {})} /></div>}</section>)}{!nodes.length && <p>正在加载节点追踪信息…</p>}</div>}</div></div>;
+}
+
+function CodePanel({ title, value }: { title: string; value: string }) { return <div className="run-code-panel"><header><strong>{title}</strong><button onClick={() => navigator.clipboard.writeText(value)}>复制</button></header><pre>{value || "—"}</pre></div>; }
 
 function Studio({ apps, allApps, filter, setFilter, onCreate, onOpen, onEdit, onDuplicate, onExport, onDelete, onDeleteWorkspace, disabled }: { apps: FlowApp[]; allApps: FlowApp[]; filter: AppFilter; setFilter: (value: AppFilter) => void; onCreate: () => void; onOpen: (app: FlowApp) => void; onEdit: (app: FlowApp) => void; onDuplicate: (app: FlowApp) => void; onExport: (app: FlowApp) => void; onDelete: (app: FlowApp) => void; onDeleteWorkspace: () => void; disabled: boolean }) {
   const [search, setSearch] = useState("");
@@ -238,32 +253,44 @@ function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; prov
   const [answer, setAnswer] = useState("");
   const [running, setRunning] = useState(false);
   const [meta, setMeta] = useState("");
+  const usesWorkflow = app.app_type === "workflow" || app.app_type === "chatflow";
   const hasProvider = !!app.draft.model.provider_config_id && providers.some((item) => item.id === app.draft.model.provider_config_id);
+  const canRun = usesWorkflow || hasProvider;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!hasProvider) { onError("请先配置真实模型供应商和 API Key，再运行应用。"); return; }
+    if (!canRun) { onError("请先配置真实模型供应商和 API Key，再运行应用。"); return; }
     if (!input.trim() || running) return;
     const message = input.trim();
     setQuestion(message); setInput(""); setAnswer(""); setMeta(""); setRunning(true);
     try {
-      await api.streamRun(app.id, message, (item) => {
-        if (item.type === "message_delta") setAnswer((value) => value + String(item.data.delta ?? ""));
-        if (item.type === "model_completed") {
-          const usage = item.data.usage as Record<string, number | null>;
-          setMeta(`${item.data.duration_ms} ms · ${usage.total_tokens ?? "--"} tokens · ${item.data.finish_reason ?? "完成"}`);
-        }
-        if (item.type === "run_failed") onError(`${item.data.error_code}: ${item.data.error}`);
-      });
+      if (usesWorkflow) {
+        await api.streamWorkflow(app.id, message, (item) => {
+          if (item.type === "workflow_succeeded") {
+            setAnswer(String(item.data.output ?? ""));
+            setMeta(`${item.data.duration_ms ?? "--"} ms · 工作流运行完成`);
+          }
+          if (item.type === "workflow_failed") onError(`${item.data.error_code}: ${item.data.error}`);
+        });
+      } else {
+        await api.streamRun(app.id, message, (item) => {
+          if (item.type === "message_delta") setAnswer((value) => value + String(item.data.delta ?? ""));
+          if (item.type === "model_completed") {
+            const usage = item.data.usage as Record<string, number | null>;
+            setMeta(`${item.data.duration_ms} ms · ${usage.total_tokens ?? "--"} tokens · ${item.data.finish_reason ?? "完成"}`);
+          }
+          if (item.type === "run_failed") onError(`${item.data.error_code}: ${item.data.error}`);
+        });
+      }
     } catch (reason) { onError(reason); } finally { setRunning(false); }
   }
 
   return <section className="chat-layout">
     <div className="chat-stage">
-      <div className="chat-heading"><div><h2>对话调试</h2><p>{app.draft.model.model}</p></div><span className="draft-badge">DRAFT</span></div>
+      <div className="chat-heading"><div><h2>对话调试</h2><p>{usesWorkflow ? "执行当前工作流草稿" : app.draft.model.model}</p></div><span className="draft-badge">DRAFT</span></div>
       <div className="conversation">
-        {!hasProvider && <div className="model-required"><span>AI</span><h3>还没有可用的真实模型</h3><p>配置 OpenAI-compatible API Key，并为当前应用选择模型后即可调试。</p><button className="primary" onClick={onSettings}>前往模型设置</button></div>}
-        {hasProvider && !question && !answer && !running && <div className="conversation-empty"><span>✦</span><h3>测试你的应用</h3><p>输入一条消息，观察模型输出和运行指标。</p></div>}
+        {!canRun && <div className="model-required"><span>AI</span><h3>还没有可用的真实模型</h3><p>配置 OpenAI-compatible API Key，并为当前应用选择模型后即可调试。</p><button className="primary" onClick={onSettings}>前往模型设置</button></div>}
+        {canRun && !question && !answer && !running && <div className="conversation-empty"><span>✦</span><h3>测试你的应用</h3><p>{usesWorkflow ? "消息会从开始节点进入，并执行当前工作流中的全部节点。" : "输入一条消息，观察模型输出和运行指标。"}</p></div>}
         {question && <div className="message user-message"><div><div className="bubble">{question}</div></div><div className="avatar user-avatar">你</div></div>}
         {(answer || running) && <div className="message ai-message"><div className="avatar ai-avatar"><img src={lobsterLogo} alt="LOB AI" /></div><div><div className="bubble">{answer || <span className="typing">正在思考</span>}</div>{meta && <div className="message-meta">{meta}</div>}</div></div>}
       </div>
@@ -280,7 +307,7 @@ function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; prov
           placeholder="输入消息，Enter 发送，Shift + Enter 换行…"
           rows={3}
         />
-        <button className="send" disabled={!hasProvider || running || !input.trim()}>{running ? "运行中" : "发送"}</button>
+        <button className="send" disabled={!canRun || running || !input.trim()}>{running ? "运行中" : "发送"}</button>
       </form>
     </div>
   </section>;

@@ -1,4 +1,4 @@
-import type { App, AppType, Dataset, DatasetDocument, DifyToolProvider, DocumentSegment, DraftDefinition, PluginCatalogItem, ProviderConfig, RetrievalResult, RunEvent, ServiceApiKey, WorkflowDefinition, WorkflowDraft, WorkflowEvent, WorkflowRun, Workspace } from "./types";
+import type { App, AppType, Dataset, DatasetDocument, DifyToolProvider, DocumentSegment, DraftDefinition, NodeRun, PluginCatalogItem, ProviderConfig, RetrievalResult, RunEvent, ServiceApiKey, WorkflowDefinition, WorkflowDraft, WorkflowEvent, WorkflowRun, Workspace } from "./types";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -110,6 +110,7 @@ export const api = {
       body: JSON.stringify(definition)
     }),
   listWorkflowRuns: (appId: string) => request<WorkflowRun[]>(`/api/apps/${appId}/workflow-runs`),
+  listWorkflowNodeRuns: (runId: string) => request<NodeRun[]>(`/api/workflow-runs/${runId}/nodes`),
   listApiKeys: (appId: string) => request<ServiceApiKey[]>(`/api/apps/${appId}/api-keys`),
   createApiKey: (appId: string, name: string) => request<ServiceApiKey>(`/api/apps/${appId}/api-keys`, { method: "POST", body: JSON.stringify({ name }) }),
   deleteApiKey: (appId: string, keyId: string) => request<void>(`/api/apps/${appId}/api-keys/${keyId}`, { method: "DELETE" }),

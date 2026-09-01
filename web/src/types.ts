@@ -90,6 +90,20 @@ export interface WorkflowRun {
   trigger_source: string;
 }
 
+export interface NodeRun {
+  id: string;
+  workflow_run_id: string;
+  node_id: string;
+  node_type: WorkflowNodeType;
+  status: "running" | "succeeded" | "failed";
+  input: Record<string, unknown>;
+  output: Record<string, unknown> | null;
+  error: string | null;
+  started_at: string;
+  finished_at: string | null;
+  duration_ms: number | null;
+}
+
 export interface ServiceApiKey {
   id: string;
   app_id: string;
