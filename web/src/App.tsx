@@ -6,6 +6,8 @@ import { WorkflowCanvas } from "./WorkflowCanvas";
 import { PluginMarketplace } from "./PluginMarketplace";
 import { KnowledgeBase } from "./KnowledgeBase";
 import { ToolsLibrary } from "./ToolsLibrary";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type Tab = "studio" | "chat" | "workflow" | "api" | "logs" | "knowledge" | "tools" | "plugins" | "settings";
 type AppFilter = "all" | AppType;
@@ -206,7 +208,7 @@ export function App() {
         {tab === "studio" ? <Studio apps={visibleApps} allApps={apps} filter={appFilter} setFilter={setAppFilter} onCreate={createApp} onImport={() => { setImportTarget(null); importRef.current?.click(); }} onImportInto={(app) => { if (window.confirm(`导入 DSL 将覆盖“${app.name}”当前的工作流草稿，是否继续？`)) { setImportTarget(app); importRef.current?.click(); } }} onOpen={openApp} onEdit={setEditingApp} onDuplicate={duplicateApp} onExport={exportDsl} onDelete={setDeleteTarget} onDeleteWorkspace={() => setShowDeleteWorkspace(true)} disabled={!workspaceId} /> : tab === "knowledge" ? <KnowledgeBase workspaceId={workspaceId} onError={showError} /> : tab === "tools" ? <ToolsLibrary workspaceId={workspaceId} onError={showError} /> : tab === "plugins" ? <PluginMarketplace workspaceId={workspaceId} onError={showError} /> : !activeApp ? <Welcome onCreate={createApp} disabled={!workspaceId} /> : tab === "chat" ? (
           <ChatPanel app={activeApp} providers={providers} onSettings={() => setTab("settings")} onError={showError} />
         ) : tab === "workflow" ? (
-          <WorkflowCanvas app={activeApp} workspaceId={workspaceId} providers={providers} onError={showError} />
+          <WorkflowCanvas app={activeApp} workspaceId={workspaceId} providers={providers} onError={showError} onOpenLogs={() => setTab("logs")} />
         ) : tab === "api" ? (
           <ApiAccessPanel app={activeApp} onError={showError} />
         ) : tab === "logs" ? (
@@ -275,6 +277,10 @@ function RunDetailModal({ run, nodes, close }: { run: WorkflowRun; nodes: NodeRu
 
 function CodePanel({ title, value }: { title: string; value: string }) { return <div className="run-code-panel"><header><strong>{title}</strong><button onClick={() => navigator.clipboard.writeText(value)}>复制</button></header><pre>{value || "—"}</pre></div>; }
 
+function MarkdownResult({ content }: { content: string }) {
+  return <div className="markdown-result"><ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown></div>;
+}
+
 function Studio({ apps, allApps, filter, setFilter, onCreate, onImport, onImportInto, onOpen, onEdit, onDuplicate, onExport, onDelete, onDeleteWorkspace, disabled }: { apps: FlowApp[]; allApps: FlowApp[]; filter: AppFilter; setFilter: (value: AppFilter) => void; onCreate: () => void; onImport: () => void; onImportInto: (app: FlowApp) => void; onOpen: (app: FlowApp) => void; onEdit: (app: FlowApp) => void; onDuplicate: (app: FlowApp) => void; onExport: (app: FlowApp) => void; onDelete: (app: FlowApp) => void; onDeleteWorkspace: () => void; disabled: boolean }) {
   const [search, setSearch] = useState("");
   const [mineOnly, setMineOnly] = useState(false);
@@ -332,7 +338,7 @@ function ChatPanel({ app, providers, onSettings, onError }: { app: FlowApp; prov
         {!canRun && <div className="model-required"><span>AI</span><h3>还没有可用的真实模型</h3><p>配置 OpenAI-compatible API Key，并为当前应用选择模型后即可调试。</p><button className="primary" onClick={onSettings}>前往模型设置</button></div>}
         {canRun && !question && !answer && !running && <div className="conversation-empty"><span>✦</span><h3>测试你的应用</h3><p>{usesWorkflow ? "消息会从开始节点进入，并执行当前工作流中的全部节点。" : "输入一条消息，观察模型输出和运行指标。"}</p></div>}
         {question && <div className="message user-message"><div><div className="bubble">{question}</div></div><div className="avatar user-avatar">你</div></div>}
-        {(answer || running) && <div className="message ai-message"><div className="avatar ai-avatar"><img src={lobsterLogo} alt="LOB AI" /></div><div><div className="bubble">{answer || <span className="typing">正在思考</span>}</div>{meta && <div className="message-meta">{meta}</div>}</div></div>}
+        {(answer || running) && <div className="message ai-message"><div className="avatar ai-avatar"><img src={lobsterLogo} alt="LOB AI" /></div><div><div className="bubble">{answer ? <MarkdownResult content={answer} /> : <span className="typing">正在思考</span>}</div>{meta && <div className="message-meta">{meta}</div>}</div></div>}
       </div>
       <form className="composer" onSubmit={submit}>
         <textarea

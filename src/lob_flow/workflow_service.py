@@ -4,6 +4,7 @@ import json
 import psycopg
 import hashlib
 import secrets
+import re
 from collections.abc import Iterator
 from time import monotonic
 from uuid import uuid4
@@ -158,10 +159,10 @@ class WorkflowService:
                 )
 
                 if node.type == "template":
-                    value = node.config["template"].format(input=value)
+                    value = self._resolve_text(str(node.config["template"]), value, node_values, user_input)
                 elif node.type == "llm":
                     definition = DraftDefinition(
-                        system_prompt=node.config.get("system_prompt", ""),
+                        system_prompt=self._resolve_text(str(node.config.get("system_prompt", "")), value, node_values, user_input),
                         user_prompt_template="{input}",
                         model=ModelConfig(
                             provider_config_id=node.config["provider_config_id"],
@@ -187,7 +188,7 @@ class WorkflowService:
                     value = "".join(parts)
                 elif node.type == "tool":
                     parameters = self._resolve_parameters(
-                        node.config.get("parameters", {}), value, node_values
+                        node.config.get("parameters", {}), value, node_values, user_input
                     )
                     if node.config.get("runtime") == "dify":
                         if self.dify_daemon is None:
@@ -245,7 +246,7 @@ class WorkflowService:
                 elif node.type == "knowledge":
                     if self.knowledge_service is None:
                         raise RuntimeError("Knowledge service is unavailable")
-                    query = str(node.config.get("query", "{input}")).replace("{input}", value)
+                    query = self._resolve_text(str(node.config.get("query", "{input}")), value, node_values, user_input)
                     response = self.knowledge_service.retrieve(
                         str(node.config["dataset_id"]),
                         RetrievalRequest(
@@ -596,14 +597,40 @@ class WorkflowService:
             raise WorkflowValidationError(["Knowledge 节点引用的知识库不存在或不属于当前空间"])
 
     @staticmethod
-    def _resolve_parameters(parameters: dict, value: str, node_values: dict[str, str] | None = None) -> dict:
+    def _resolve_text(text: str, value: str, node_values: dict[str, str] | None = None, user_input: str = "") -> str:
+        references = node_values or {}
+        result = text.replace("{input}", value)
+
+        def replace_variable(match: re.Match[str]) -> str:
+            node_id, field = match.group(1), match.group(2)
+            if node_id == "start" and field == "input":
+                return user_input
+            node_value = references.get(node_id, "")
+            if field in ("output", "value"):
+                return node_value
+            if field.startswith("output."):
+                try:
+                    current = json.loads(node_value)
+                    for part in field[7:].split("."):
+                        current = current[int(part)] if isinstance(current, list) else current[part]
+                    return current if isinstance(current, str) else json.dumps(current, ensure_ascii=False)
+                except (json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
+                    return ""
+            return ""
+
+        result = re.sub(r"\{\{([A-Za-z0-9_-]+)\.([A-Za-z0-9_.-]+)\}\}", replace_variable, result)
+        for node_id, node_value in references.items():
+            result = result.replace(f"{{{node_id}}}", node_value)
+        return result
+
+    @staticmethod
+    def _resolve_parameters(parameters: dict, value: str, node_values: dict[str, str] | None = None, user_input: str = "") -> dict:
         references = node_values or {}
 
         def resolve(item):
             if isinstance(item, str):
-                result = item.replace("{input}", value)
+                result = WorkflowService._resolve_text(item, value, references, user_input)
                 for node_id, node_value in references.items():
-                    result = result.replace(f"{{{node_id}}}", node_value)
                     prefix = f"{{{node_id}."
                     while prefix in result:
                         start = result.index(prefix)

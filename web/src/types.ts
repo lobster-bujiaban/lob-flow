@@ -89,6 +89,7 @@ export interface PluginRuntimeState {
   workspace_id: string;
   plugin_id: string;
   enabled: boolean;
+  misfire_policy: "skip" | "run_once";
   updated_at: string;
 }
 
@@ -122,14 +123,16 @@ export interface ScheduleTrigger {
   timezone: string;
   input: string;
   enabled: boolean;
+  misfire_policy: "skip" | "run_once";
   last_triggered_at: string | null;
   next_trigger_at: string | null;
   last_error: string | null;
+  last_run_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export type ScheduleTriggerInput = Pick<ScheduleTrigger, "name" | "cron" | "timezone" | "input" | "enabled">;
+export type ScheduleTriggerInput = Pick<ScheduleTrigger, "name" | "cron" | "timezone" | "input" | "enabled" | "misfire_policy">;
 
 export interface NodeRun {
   id: string;

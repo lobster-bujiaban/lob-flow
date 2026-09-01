@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from croniter import croniter
 
 from lob_flow.database import Database
-from lob_flow.models import ScheduleTrigger, ScheduleTriggerCreate, ScheduleTriggerUpdate
+from lob_flow.models import ScheduleTrigger, ScheduleTriggerCreate, ScheduleTriggerUpdate, WorkflowRun
 from lob_flow.service import NotFoundError, now
 from lob_flow.workflow import WorkflowValidationError
 from lob_flow.workflow_service import WorkflowService
@@ -40,16 +40,16 @@ class ScheduleService:
         next_trigger_at = self._next_time(request.cron, request.timezone, timestamp) if request.enabled else None
         item = ScheduleTrigger(
             id=str(uuid4()), app_id=app_id, name=request.name, cron=request.cron,
-            timezone=request.timezone, input=request.input, enabled=request.enabled,
+            timezone=request.timezone, input=request.input, enabled=request.enabled, misfire_policy=request.misfire_policy,
             next_trigger_at=next_trigger_at, created_at=timestamp, updated_at=timestamp,
         )
         with self.database.connect() as connection:
             connection.execute(
                 """INSERT INTO workflow_schedule_triggers
-                   (id, app_id, name, cron, timezone, input, enabled, next_trigger_at, created_at, updated_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                   (id, app_id, name, cron, timezone, input, enabled, misfire_policy, next_trigger_at, created_at, updated_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (item.id, app_id, item.name, item.cron, item.timezone, item.input,
-                 item.enabled, item.next_trigger_at.isoformat() if item.next_trigger_at else None,
+                 item.enabled, item.misfire_policy, item.next_trigger_at.isoformat() if item.next_trigger_at else None,
                  timestamp.isoformat(), timestamp.isoformat()),
             )
         return item
@@ -63,10 +63,10 @@ class ScheduleService:
         with self.database.connect() as connection:
             connection.execute(
                 """UPDATE workflow_schedule_triggers
-                   SET name = %s, cron = %s, timezone = %s, input = %s, enabled = %s,
+                   SET name = %s, cron = %s, timezone = %s, input = %s, enabled = %s, misfire_policy = %s,
                        next_trigger_at = %s, last_error = NULL, updated_at = %s
                    WHERE id = %s AND app_id = %s""",
-                (request.name, request.cron, request.timezone, request.input, request.enabled,
+                (request.name, request.cron, request.timezone, request.input, request.enabled, request.misfire_policy,
                  next_trigger_at.isoformat() if next_trigger_at else None, timestamp.isoformat(), trigger_id, app_id),
             )
         return self._get(app_id, trigger_id)
@@ -78,6 +78,21 @@ class ScheduleService:
                 "DELETE FROM workflow_schedule_triggers WHERE id = %s AND app_id = %s",
                 (trigger_id, app_id),
             )
+
+    def run_now(self, app_id: str, trigger_id: str) -> WorkflowRun:
+        trigger = self._get(app_id, trigger_id)
+        self._require_published(app_id)
+        run_id, error = self._execute(trigger.model_dump())
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE workflow_schedule_triggers
+                   SET last_triggered_at = %s, last_run_id = %s, last_error = %s, updated_at = %s
+                   WHERE id = %s""",
+                (now().isoformat(), run_id, error, now().isoformat(), trigger_id),
+            )
+        if run_id is None:
+            raise WorkflowValidationError([error or "定时工作流执行失败"])
+        return self.workflow_service.get_run(run_id)
 
     def run_due(self, limit: int = 10) -> int:
         claimed: list[dict] = []
@@ -92,28 +107,39 @@ class ScheduleService:
             for row in rows:
                 values = dict(row)
                 next_time = self._next_time(values["cron"], values["timezone"], current)
+                scheduled_at = datetime.fromisoformat(str(values["next_trigger_at"]).replace("Z", "+00:00"))
+                missed = (current - scheduled_at).total_seconds() > 60
                 connection.execute(
                     """UPDATE workflow_schedule_triggers
-                       SET last_triggered_at = %s, next_trigger_at = %s, updated_at = %s
+                       SET last_triggered_at = CASE WHEN %s THEN last_triggered_at ELSE %s END,
+                           next_trigger_at = %s, updated_at = %s
                        WHERE id = %s""",
-                    (current.isoformat(), next_time.isoformat(), current.isoformat(), values["id"]),
+                    (missed and values.get("misfire_policy", "skip") == "skip", current.isoformat(), next_time.isoformat(), current.isoformat(), values["id"]),
                 )
-                claimed.append(values)
+                if not missed or values.get("misfire_policy", "skip") == "run_once":
+                    claimed.append(values)
         for trigger in claimed:
-            error: str | None = None
-            try:
-                list(self.workflow_service.stream_run(
-                    trigger["app_id"], trigger["input"], "schedule", use_published=True,
-                ))
-            except Exception as exc:  # Worker must keep processing later schedules.
-                error = str(exc)[:2000]
-                logger.exception("Scheduled workflow %s failed", trigger["id"])
+            run_id, error = self._execute(trigger)
             with self.database.connect() as connection:
                 connection.execute(
-                    "UPDATE workflow_schedule_triggers SET last_error = %s WHERE id = %s",
-                    (error, trigger["id"]),
+                    "UPDATE workflow_schedule_triggers SET last_error = %s, last_run_id = %s WHERE id = %s",
+                    (error, run_id, trigger["id"]),
                 )
         return len(claimed)
+
+    def _execute(self, trigger: dict) -> tuple[str | None, str | None]:
+        try:
+            events = list(self.workflow_service.stream_run(
+                trigger["app_id"], trigger["input"], "schedule", use_published=True,
+            ))
+            run_id = events[0].workflow_run_id if events else None
+            if run_id is None:
+                return None, "工作流未创建运行记录"
+            run = self.workflow_service.get_run(run_id)
+            return run_id, run.error if run.status == "failed" else None
+        except Exception as exc:  # Worker must keep processing later schedules.
+            logger.exception("Scheduled workflow %s failed", trigger["id"])
+            return None, str(exc)[:2000]
 
     def _get(self, app_id: str, trigger_id: str) -> ScheduleTrigger:
         with self.database.connect() as connection:

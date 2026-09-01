@@ -417,6 +417,10 @@ def create_app(database: Database | None = None) -> FastAPI:
         schedule_service.delete(app_id, trigger_id)
         return Response(status_code=204)
 
+    @application.post("/api/apps/{app_id}/schedule-triggers/{trigger_id}/run", response_model=WorkflowRun)
+    def run_schedule_trigger(app_id: str, trigger_id: str) -> WorkflowRun:
+        return schedule_service.run_now(app_id, trigger_id)
+
     @application.get("/api/apps/{app_id}/api-keys", response_model=list[ServiceApiKey])
     def list_service_api_keys(app_id: str) -> list[ServiceApiKey]:
         return workflow_service.list_api_keys(app_id)

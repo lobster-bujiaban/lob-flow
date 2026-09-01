@@ -123,6 +123,7 @@ export const api = {
   createScheduleTrigger: (appId: string, body: ScheduleTriggerInput) => request<ScheduleTrigger>(`/api/apps/${appId}/schedule-triggers`, { method: "POST", body: JSON.stringify(body) }),
   updateScheduleTrigger: (appId: string, triggerId: string, body: ScheduleTriggerInput) => request<ScheduleTrigger>(`/api/apps/${appId}/schedule-triggers/${triggerId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteScheduleTrigger: (appId: string, triggerId: string) => request<void>(`/api/apps/${appId}/schedule-triggers/${triggerId}`, { method: "DELETE" }),
+  runScheduleTrigger: (appId: string, triggerId: string) => request<WorkflowRun>(`/api/apps/${appId}/schedule-triggers/${triggerId}/run`, { method: "POST" }),
   listWorkflowNodeRuns: (runId: string) => request<NodeRun[]>(`/api/workflow-runs/${runId}/nodes`),
   retryWorkflowRun: (runId: string) => request<WorkflowRun>(`/api/workflow-runs/${runId}/retry`, { method: "POST" }),
   listApiKeys: (appId: string) => request<ServiceApiKey[]>(`/api/apps/${appId}/api-keys`),

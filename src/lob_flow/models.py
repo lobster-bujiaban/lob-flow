@@ -206,6 +206,7 @@ class ScheduleTriggerCreate(BaseModel):
     timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=100)
     input: str = Field(min_length=1, max_length=20_000)
     enabled: bool = False
+    misfire_policy: Literal["skip", "run_once"] = "skip"
 
 
 class ScheduleTriggerUpdate(ScheduleTriggerCreate):
@@ -220,9 +221,11 @@ class ScheduleTrigger(BaseModel):
     timezone: str
     input: str
     enabled: bool
+    misfire_policy: Literal["skip", "run_once"] = "skip"
     last_triggered_at: datetime | None = None
     next_trigger_at: datetime | None = None
     last_error: str | None = None
+    last_run_id: str | None = None
     created_at: datetime
     updated_at: datetime
 

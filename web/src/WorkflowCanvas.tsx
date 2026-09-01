@@ -25,6 +25,7 @@ type CanvasData = {
   workflow: WorkflowNode;
   status?: string;
   output?: string;
+  openNodeLibrary?: (sourceId: string) => void;
 };
 type CanvasNode = Node<CanvasData, "workflow">;
 
@@ -44,17 +45,17 @@ function CanvasNodeCard({ data, selected }: NodeProps<CanvasNode>) {
     <div className="canvas-node-title"><span>{workflow.type.toUpperCase()}</span><strong>{workflow.name}</strong></div>
     <p>{status === "running" ? "运行中…" : status === "succeeded" ? "运行完成" : labels[workflow.type]}</p>
     {output && <div className="canvas-node-preview">{output}</div>}
-    {workflow.type !== "answer" && <Handle type="source" position={Position.Right} />}
+    {workflow.type !== "answer" && <Handle type="source" position={Position.Right} onClick={(event) => { event.stopPropagation(); data.openNodeLibrary?.(workflow.id); }} title="点击添加下游节点，或拖拽连线" />}
   </div>;
 }
 
 const nodeTypes = { workflow: CanvasNodeCard };
 
-export function WorkflowCanvas(props: { app: App; workspaceId: string; providers: ProviderConfig[]; onError: (reason: unknown) => void }) {
+export function WorkflowCanvas(props: { app: App; workspaceId: string; providers: ProviderConfig[]; onError: (reason: unknown) => void; onOpenLogs: () => void }) {
   return <ReactFlowProvider><WorkflowCanvasInner {...props} /></ReactFlowProvider>;
 }
 
-function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: App; workspaceId: string; providers: ProviderConfig[]; onError: (reason: unknown) => void }) {
+function WorkflowCanvasInner({ app, workspaceId, providers, onError, onOpenLogs }: { app: App; workspaceId: string; providers: ProviderConfig[]; onError: (reason: unknown) => void; onOpenLogs: () => void }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -66,6 +67,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [difyTools, setDifyTools] = useState<DifyToolProvider[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteSourceId, setPaletteSourceId] = useState<string | null>(null);
   const [panelMode, setPanelMode] = useState<"node" | "run" | null>(null);
   const [lastSaved, setLastSaved] = useState("");
   const [versions, setVersions] = useState<WorkflowVersion[]>([]);
@@ -86,7 +88,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
       id: workflow.id,
       type: "workflow",
       position: { x: workflow.position.x ?? 80 + index * 280, y: workflow.position.y ?? 220 },
-      data: { workflow },
+      data: { workflow, openNodeLibrary: openLibraryFromNode },
       deletable: workflow.type !== "start",
       selected: false
     })));
@@ -102,6 +104,20 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
   }
 
   const selected = useMemo(() => nodes.find((node) => node.id === selectedId) ?? null, [nodes, selectedId]);
+  const availableVariables = useMemo(() => {
+    if (!selectedId) return [];
+    const upstream = new Set<string>();
+    const pending = [selectedId];
+    while (pending.length) {
+      const target = pending.pop()!;
+      for (const edge of edges) {
+        if (edge.target !== target || upstream.has(edge.source)) continue;
+        upstream.add(edge.source);
+        pending.push(edge.source);
+      }
+    }
+    return nodes.filter((node) => upstream.has(node.id)).map((node) => node.data.workflow);
+  }, [nodes, edges, selectedId]);
   const definition = useCallback((): WorkflowDefinition => ({
     nodes: nodes.map((node) => ({ ...node.data.workflow, position: node.position })),
     edges: edges.map((edge) => ({ source: edge.source, target: edge.target }))
@@ -111,6 +127,13 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
     ...connection,
     markerEnd: { type: MarkerType.ArrowClosed }
   }, current)), [setEdges]);
+
+  function openLibraryFromNode(sourceId: string) {
+    setPaletteSourceId(sourceId);
+    setPaletteOpen(true);
+    setPanelMode(null);
+    setSelectedId(null);
+  }
 
   function addNode(type: WorkflowNodeType, selectedPlugin?: PluginCatalogItem, selectedToolName?: string, selectedDify?: DifyToolProvider, selectedDataset?: Dataset) {
     if (type === "start" && nodes.some((node) => node.data.workflow.type === "start")) return;
@@ -125,17 +148,20 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
           ? { dataset_id: selectedDataset?.id ?? datasets[0]?.id ?? "", query: "{input}", top_k: 3, score_threshold: 0 }
           : {};
     const tool = type === "tool" ? (selectedDify?.tools.find((item) => item.name === selectedToolName) ?? selectedPlugin?.manifest.tools.find((item) => item.name === selectedToolName)) : undefined;
+    const sourceNode = paletteSourceId ? nodes.find((item) => item.id === paletteSourceId) : undefined;
     const node: CanvasNode = {
       id,
       type: "workflow",
-      position: { x: 360 + nodes.length * 35, y: 160 + nodes.length * 35 },
-      data: { workflow: { id, type, name: selectedDataset ? `检索 · ${selectedDataset.name}` : tool?.label ?? labels[type], config, position: {} } },
+      position: sourceNode ? { x: sourceNode.position.x + 320, y: sourceNode.position.y } : { x: 360 + nodes.length * 35, y: 160 + nodes.length * 35 },
+      data: { workflow: { id, type, name: selectedDataset ? `检索 · ${selectedDataset.name}` : tool?.label ?? labels[type], config, position: {} }, openNodeLibrary: openLibraryFromNode },
       deletable: type !== "start"
     };
     setNodes((current) => [...current, node]);
+    if (paletteSourceId) setEdges((current) => addEdge({ id: `edge-${paletteSourceId}-${id}`, source: paletteSourceId, target: id, markerEnd: { type: MarkerType.ArrowClosed } }, current));
     setSelectedId(id);
     setPanelMode("node");
     setPaletteOpen(false);
+    setPaletteSourceId(null);
   }
 
   function deleteSelected() {
@@ -238,7 +264,7 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
           onEdgesChange={onEdgesChange}
           onConnect={connect}
           onNodeClick={(_, node) => { setSelectedId(node.id); setPanelMode("node"); }}
-          onPaneClick={() => { setSelectedId(null); setPanelMode(null); setPaletteOpen(false); }}
+          onPaneClick={() => { setSelectedId(null); setPanelMode(null); setPaletteOpen(false); setPaletteSourceId(null); }}
           deleteKeyCode={["Backspace", "Delete"]}
           proOptions={{ hideAttribution: true }}
           fitView
@@ -249,19 +275,19 @@ function WorkflowCanvasInner({ app, workspaceId, providers, onError }: { app: Ap
           <MiniMap nodeColor={(node) => (node.data as CanvasData).workflow.type === "llm" ? "#ed5a2a" : (node.data as CanvasData).workflow.type === "answer" ? "#24855b" : "#17335e"} />
           <Controls />
         </ReactFlow>
-        <div className="flow-palette"><button className={paletteOpen ? "active" : ""} onClick={() => setPaletteOpen((open) => !open)} title="添加节点">＋</button><button onClick={() => setPanelMode("run")} title="测试运行">▷</button></div>
+        <div className="flow-palette"><button className={paletteOpen && !paletteSourceId ? "active" : ""} onClick={() => { setPaletteSourceId(null); setPaletteOpen((open) => !open); }} title="添加节点">＋</button><button onClick={() => setPanelMode("run")} title="测试运行">▷</button></div>
         {paletteOpen && <UnifiedNodeLibrary plugins={plugins} difyTools={difyTools} datasets={datasets} addNode={addNode} scheduleCount={scheduleTriggers.length} openSchedules={() => { setPaletteOpen(false); setScheduleOpen(true); }} selectStart={() => {
           const start = nodes.find((node) => node.data.workflow.type === "start");
           if (!start) { addNode("start"); return; }
           setSelectedId(start.id);
           setPanelMode("node");
           setPaletteOpen(false);
-        }} close={() => setPaletteOpen(false)} />}
+        }} close={() => { setPaletteOpen(false); setPaletteSourceId(null); }} />}
       </div>
-      {panelMode && <aside className="flow-inspector"><button className="inspector-close" onClick={() => { setPanelMode(null); setSelectedId(null); }}>×</button>{panelMode === "node" && selected ? <NodeInspector node={selected.data.workflow} providers={providers} plugins={plugins} difyTools={difyTools} datasets={datasets} update={updateSelected} remove={deleteSelected} runNode={() => runSelectedNode(selected.id)} running={running} /> : <RunInspector input={input} setInput={setInput} run={run} running={running} answer={answer} />}</aside>}
+      {panelMode && <aside className="flow-inspector"><button className="inspector-close" onClick={() => { setPanelMode(null); setSelectedId(null); }}>×</button>{panelMode === "node" && selected ? <NodeInspector node={selected.data.workflow} variables={availableVariables} providers={providers} plugins={plugins} difyTools={difyTools} datasets={datasets} update={updateSelected} remove={deleteSelected} runNode={() => runSelectedNode(selected.id)} running={running} /> : <RunInspector input={input} setInput={setInput} run={run} running={running} answer={answer} />}</aside>}
     </div>
     {showVersions && <div className="modal-backdrop"><div className="modal workflow-version-modal"><div className="modal-head"><div><h3>发布版本</h3><p>API 执行最新发布版本；恢复后需重新发布才会生效。</p></div><button onClick={() => setShowVersions(false)}>×</button></div>{versions.map((version) => <div className="workflow-version-row" key={version.id}><div><strong>v{version.version}</strong><small>{new Date(version.created_at).toLocaleString()}</small></div><button onClick={() => rollback(version)}>恢复为草稿</button></div>)}{!versions.length && <p className="inspector-hint">尚未发布任何版本。</p>}</div></div>}
-    {scheduleOpen && <ScheduleManagerModal appId={app.id} triggers={scheduleTriggers} onChange={setScheduleTriggers} close={() => setScheduleOpen(false)} onError={onError} />}
+    {scheduleOpen && <ScheduleManagerModal appId={app.id} triggers={scheduleTriggers} onChange={setScheduleTriggers} close={() => setScheduleOpen(false)} onError={onError} onOpenLogs={onOpenLogs} />}
   </section>;
 }
 
@@ -294,9 +320,20 @@ function UnifiedNodeLibrary({ plugins, difyTools, datasets, addNode, selectStart
   </div>;
 }
 
-const emptySchedule: ScheduleTriggerInput = { name: "定时触发器", cron: "0 9 * * 1-5", timezone: "Asia/Shanghai", input: "请执行定时工作流", enabled: false };
+const emptySchedule: ScheduleTriggerInput = { name: "定时触发器", cron: "0 9 * * 1-5", timezone: "Asia/Shanghai", input: "请执行定时工作流", enabled: false, misfire_policy: "skip" };
 
-function ScheduleManagerModal({ appId, triggers, onChange, close, onError }: { appId: string; triggers: ScheduleTrigger[]; onChange: (items: ScheduleTrigger[]) => void; close: () => void; onError: (reason: unknown) => void }) {
+function describeCron(expression: string) {
+  const parts = expression.trim().split(/\s+/);
+  if (parts.length !== 5) return expression;
+  const [minute, hour, day, month, weekday] = parts;
+  if (day === "*" && month === "*" && weekday === "*" && hour === "*") return minute.startsWith("*/") ? `每 ${minute.slice(2)} 分钟` : `每小时第 ${minute} 分钟`;
+  if (day === "*" && month === "*" && weekday === "*") return `每天 ${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
+  if (day === "*" && month === "*" && weekday === "1-5") return `工作日 ${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
+  if (day === "*" && month === "*" && weekday === "1") return `每周一 ${hour.padStart(2, "0")}:${minute.padStart(2, "0")}`;
+  return expression;
+}
+
+function ScheduleManagerModal({ appId, triggers, onChange, close, onError, onOpenLogs }: { appId: string; triggers: ScheduleTrigger[]; onChange: (items: ScheduleTrigger[]) => void; close: () => void; onError: (reason: unknown) => void; onOpenLogs: () => void }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<ScheduleTriggerInput>(emptySchedule);
   const [saving, setSaving] = useState(false);
@@ -304,7 +341,7 @@ function ScheduleManagerModal({ appId, triggers, onChange, close, onError }: { a
 
   function edit(item?: ScheduleTrigger) {
     setEditingId(item?.id ?? "");
-    setForm(item ? { name: item.name, cron: item.cron, timezone: item.timezone, input: item.input, enabled: item.enabled } : { ...emptySchedule });
+    setForm(item ? { name: item.name, cron: item.cron, timezone: item.timezone, input: item.input, enabled: item.enabled, misfire_policy: item.misfire_policy } : { ...emptySchedule });
   }
   async function refresh() { onChange(await api.listScheduleTriggers(appId)); }
   async function saveTrigger() {
@@ -320,7 +357,7 @@ function ScheduleManagerModal({ appId, triggers, onChange, close, onError }: { a
   }
   async function toggle(item: ScheduleTrigger) {
     try {
-      await api.updateScheduleTrigger(appId, item.id, { name: item.name, cron: item.cron, timezone: item.timezone, input: item.input, enabled: !item.enabled });
+      await api.updateScheduleTrigger(appId, item.id, { name: item.name, cron: item.cron, timezone: item.timezone, input: item.input, enabled: !item.enabled, misfire_policy: item.misfire_policy });
       await refresh();
     } catch (reason) { onError(reason); }
   }
@@ -329,15 +366,21 @@ function ScheduleManagerModal({ appId, triggers, onChange, close, onError }: { a
     try { await api.deleteScheduleTrigger(appId, item.id); await refresh(); if (editingId === item.id) setEditingId(null); }
     catch (reason) { onError(reason); }
   }
+  async function runNow(item: ScheduleTrigger) {
+    setSaving(true);
+    try { await api.runScheduleTrigger(appId, item.id); await refresh(); }
+    catch (reason) { onError(reason); }
+    finally { setSaving(false); }
+  }
 
   return <div className="modal-backdrop schedule-modal-backdrop" onClick={close}><div className="modal schedule-modal" onClick={(event) => event.stopPropagation()}>
     <div className="modal-head"><div><h3>定时触发器</h3><p>按照计划自动执行最新发布的工作流版本。</p></div><button onClick={close}>×</button></div>
     {editingId === null ? <>
       <div className="schedule-toolbar"><span>{triggers.length} 个计划</span><button className="primary" onClick={() => edit()}>＋ 新建计划</button></div>
       <div className="schedule-list">{triggers.map((item) => <article key={item.id}>
-        <i>◷</i><div><strong>{item.name}</strong><code>{item.cron}</code><small>{item.timezone} · {item.next_trigger_at ? `下次 ${new Date(item.next_trigger_at).toLocaleString()}` : "已暂停"}</small>{item.last_error && <em title={item.last_error}>上次执行失败：{item.last_error}</em>}</div>
-        <button className={item.enabled ? "schedule-switch active" : "schedule-switch"} onClick={() => toggle(item)}>{item.enabled ? "已启用" : "已暂停"}</button>
-        <button onClick={() => edit(item)}>编辑</button><button className="row-delete" onClick={() => remove(item)}>删除</button>
+        <i>◷</i><div><strong>{item.name}<em className={item.enabled ? "enabled" : "paused"}>{item.enabled ? "运行中" : "已暂停"}</em></strong><code>{describeCron(item.cron)} · <span>{item.cron}</span></code><small>{item.timezone} · {item.next_trigger_at ? `下次 ${new Date(item.next_trigger_at).toLocaleString()}` : "暂无下次执行"}</small><small>{item.last_triggered_at ? `上次 ${new Date(item.last_triggered_at).toLocaleString()}` : "尚未执行"} · {item.misfire_policy === "run_once" ? "错过后补跑一次" : "错过后跳过"}</small>{item.last_error && <em title={item.last_error}>上次执行失败：{item.last_error}</em>}</div>
+        <button onClick={() => runNow(item)} disabled={saving}>立即运行</button><button className={item.enabled ? "schedule-switch active" : "schedule-switch"} onClick={() => toggle(item)}>{item.enabled ? "暂停" : "启用"}</button>
+        {item.last_run_id && <button onClick={() => { close(); onOpenLogs(); }}>查看日志</button>}<button onClick={() => edit(item)}>编辑</button><button className="row-delete" onClick={() => remove(item)}>删除</button>
       </article>)}{!triggers.length && <div className="schedule-empty"><span>◷</span><strong>还没有定时计划</strong><p>创建计划后，可以按分钟、每天或每周自动运行工作流。</p><button className="primary" onClick={() => edit()}>创建第一个计划</button></div>}</div>
     </> : <div className="schedule-form">
       <button className="schedule-back" onClick={() => setEditingId(null)}>← 返回计划列表</button>
@@ -345,6 +388,7 @@ function ScheduleManagerModal({ appId, triggers, onChange, close, onError }: { a
       <label>执行频率<select value={form.cron} onChange={(event) => setForm({ ...form, cron: event.target.value })}><option value="*/5 * * * *">每 5 分钟</option><option value="0 * * * *">每小时</option><option value="0 9 * * *">每天 09:00</option><option value="0 9 * * 1-5">工作日 09:00</option><option value="0 9 * * 1">每周一 09:00</option><option value={form.cron}>自定义 Cron：{form.cron}</option></select></label>
       <label>Cron 表达式<input value={form.cron} onChange={(event) => setForm({ ...form, cron: event.target.value })} placeholder="0 9 * * 1-5" /><small>使用标准 5 段 Cron：分钟 小时 日期 月份 星期</small></label>
       <label>时区<select value={form.timezone} onChange={(event) => setForm({ ...form, timezone: event.target.value })}><option value="Asia/Shanghai">Asia/Shanghai</option><option value="UTC">UTC</option><option value="Asia/Tokyo">Asia/Tokyo</option><option value="America/New_York">America/New_York</option><option value="Europe/London">Europe/London</option></select></label>
+      <label>错过执行<select value={form.misfire_policy} onChange={(event) => setForm({ ...form, misfire_policy: event.target.value as "skip" | "run_once" })}><option value="skip">跳过错过的执行</option><option value="run_once">恢复后立即补跑一次</option></select><small>服务停止或计划暂停期间可能错过执行时间。</small></label>
       <label>工作流输入<textarea rows={5} value={form.input} onChange={(event) => setForm({ ...form, input: event.target.value })} placeholder="定时运行时传入开始节点的内容" /></label>
       <label className="schedule-enabled"><input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} /><span><strong>保存后立即启用</strong><small>启用前必须先发布工作流。</small></span></label>
       <div className="schedule-form-actions"><button onClick={() => setEditingId(null)}>取消</button><button className="primary" disabled={saving || !form.name.trim() || !form.cron.trim() || !form.input.trim()} onClick={saveTrigger}>{saving ? "保存中…" : editing ? "保存修改" : "创建计划"}</button></div>
@@ -352,7 +396,19 @@ function ScheduleManagerModal({ appId, triggers, onChange, close, onError }: { a
   </div></div>;
 }
 
-function NodeInspector({ node, providers, plugins, difyTools, datasets, update, remove, runNode, running }: { node: WorkflowNode; providers: ProviderConfig[]; plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; datasets: Dataset[]; update: (patch: Partial<WorkflowNode>, config?: Record<string, unknown>) => void; remove: () => void; runNode: () => void; running: boolean }) {
+function VariablePicker({ nodes, currentId, onInsert }: { nodes: WorkflowNode[]; currentId: string; onInsert: (variable: string) => void }) {
+  return <select className="variable-picker" value="" onChange={(event) => { if (event.target.value) onInsert(event.target.value); }}><option value="">＋ 插入变量</option><option value="{{start.input}}">开始 / 用户输入</option>{nodes.filter((item) => item.id !== currentId && item.type !== "start").map((item) => <option key={item.id} value={`{{${item.id}.output}}`}>{item.name} / 输出</option>)}</select>;
+}
+
+function ToolVariablePicker({ parameters, nodes, currentId, onChange }: { parameters: Record<string, unknown>; nodes: WorkflowNode[]; currentId: string; onChange: (parameters: Record<string, unknown>) => void }) {
+  const keys = Object.keys(parameters);
+  const [parameter, setParameter] = useState(keys[0] ?? "");
+  if (!keys.length) return null;
+  const active = keys.includes(parameter) ? parameter : keys[0];
+  return <div className="tool-variable-picker"><label>插入变量到参数</label><select value={active} onChange={(event) => setParameter(event.target.value)}>{keys.map((key) => <option key={key} value={key}>{key}</option>)}</select><VariablePicker nodes={nodes} currentId={currentId} onInsert={(variable) => onChange({ ...parameters, [active]: `${String(parameters[active] ?? "")}${variable}` })} /></div>;
+}
+
+function NodeInspector({ node, variables, providers, plugins, difyTools, datasets, update, remove, runNode, running }: { node: WorkflowNode; variables: WorkflowNode[]; providers: ProviderConfig[]; plugins: PluginCatalogItem[]; difyTools: DifyToolProvider[]; datasets: Dataset[]; update: (patch: Partial<WorkflowNode>, config?: Record<string, unknown>) => void; remove: () => void; runNode: () => void; running: boolean }) {
   const installed = plugins.filter((item) => item.installed && item.enabled);
   const activePlugin = installed.find((item) => item.manifest.plugin_id === node.config.plugin_id);
   const activeTool = activePlugin?.manifest.tools.find((tool) => tool.name === node.config.tool_name);
@@ -363,11 +419,12 @@ function NodeInspector({ node, providers, plugins, difyTools, datasets, update, 
     <label>节点名称</label><input value={node.name} onChange={(event) => update({ name: event.target.value })} />
     <button className="node-debug-button" onClick={runNode} disabled={running}>{running ? "运行中…" : "▷ 单独运行此节点"}</button>
     {node.type === "start" && <p className="inspector-hint">Start 是工作流唯一入口，不能删除。</p>}
-    {node.type === "template" && <><label>Prompt 模板</label><textarea rows={6} value={String(node.config.template ?? "")} onChange={(event) => update({}, { template: event.target.value })} /><p className="inspector-hint">使用 <code>{"{input}"}</code> 引用上游输入。</p></>}
-    {node.type === "llm" && <><label>模型配置</label><select value={String(node.config.provider_config_id ?? "")} onChange={(event) => update({}, { provider_config_id: event.target.value })}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><label>模型</label><input value={String(node.config.model ?? "gpt-5.4")} onChange={(event) => update({}, { model: event.target.value })} /><label>System Prompt</label><textarea rows={6} value={String(node.config.system_prompt ?? "")} onChange={(event) => update({}, { system_prompt: event.target.value })} /><div className="inspector-grid"><div><label>温度</label><input type="number" step="0.1" min="0" max="2" value={Number(node.config.temperature ?? 0.2)} onChange={(event) => update({}, { temperature: Number(event.target.value) })} /></div><div><label>最大 Token</label><input type="number" min="1" value={Number(node.config.max_tokens ?? 512)} onChange={(event) => update({}, { max_tokens: Number(event.target.value) })} /></div></div></>}
-    {node.type === "knowledge" && <><label>知识库</label><select value={String(node.config.dataset_id ?? "")} onChange={(event) => update({}, { dataset_id: event.target.value })}><option value="">请选择知识库</option>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.icon} {dataset.name}</option>)}</select><label>检索 Query</label><textarea rows={4} value={String(node.config.query ?? "{input}")} onChange={(event) => update({}, { query: event.target.value })} /><p className="inspector-hint">使用 <code>{"{input}"}</code> 引用上游输入。</p><div className="inspector-grid"><div><label>Top K</label><input type="number" min="1" max="20" value={Number(node.config.top_k ?? 3)} onChange={(event) => update({}, { top_k: Number(event.target.value) })} /></div><div><label>分数阈值</label><input type="number" min="0" max="1" step="0.05" value={Number(node.config.score_threshold ?? 0)} onChange={(event) => update({}, { score_threshold: Number(event.target.value) })} /></div></div>{!datasets.length && <p className="inspector-hint">请先在知识库页面创建知识库并添加文档。</p>}</>}
+    {node.type === "template" && <><label>Prompt 模板</label><textarea rows={6} value={String(node.config.template ?? "")} onChange={(event) => update({}, { template: event.target.value })} /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { template: `${String(node.config.template ?? "")}${variable}` })} /><p className="inspector-hint">可插入开始输入或任意已执行节点的输出。</p></>}
+    {node.type === "llm" && <><label>模型配置</label><select value={String(node.config.provider_config_id ?? "")} onChange={(event) => update({}, { provider_config_id: event.target.value })}>{providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}</select><label>模型</label><input value={String(node.config.model ?? "gpt-5.4")} onChange={(event) => update({}, { model: event.target.value })} /><label>System Prompt</label><textarea rows={6} value={String(node.config.system_prompt ?? "")} onChange={(event) => update({}, { system_prompt: event.target.value })} /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { system_prompt: `${String(node.config.system_prompt ?? "")}${variable}` })} /><div className="inspector-grid"><div><label>温度</label><input type="number" step="0.1" min="0" max="2" value={Number(node.config.temperature ?? 0.2)} onChange={(event) => update({}, { temperature: Number(event.target.value) })} /></div><div><label>最大 Token</label><input type="number" min="1" value={Number(node.config.max_tokens ?? 512)} onChange={(event) => update({}, { max_tokens: Number(event.target.value) })} /></div></div></>}
+    {node.type === "knowledge" && <><label>知识库</label><select value={String(node.config.dataset_id ?? "")} onChange={(event) => update({}, { dataset_id: event.target.value })}><option value="">请选择知识库</option>{datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.icon} {dataset.name}</option>)}</select><label>检索 Query</label><textarea rows={4} value={String(node.config.query ?? "{input}")} onChange={(event) => update({}, { query: event.target.value })} /><VariablePicker nodes={variables} currentId={node.id} onInsert={(variable) => update({}, { query: `${String(node.config.query ?? "")}${variable}` })} /><p className="inspector-hint">选择开始输入或上游节点输出作为检索内容。</p><div className="inspector-grid"><div><label>Top K</label><input type="number" min="1" max="20" value={Number(node.config.top_k ?? 3)} onChange={(event) => update({}, { top_k: Number(event.target.value) })} /></div><div><label>分数阈值</label><input type="number" min="0" max="1" step="0.05" value={Number(node.config.score_threshold ?? 0)} onChange={(event) => update({}, { score_threshold: Number(event.target.value) })} /></div></div>{!datasets.length && <p className="inspector-hint">请先在知识库页面创建知识库并添加文档。</p>}</>}
     {node.type === "tool" && node.config.runtime !== "dify" && <><label>已安装插件</label><select value={String(node.config.plugin_id ?? "")} onChange={(event) => { const plugin = installed.find((item) => item.manifest.plugin_id === event.target.value); const tool = plugin?.manifest.tools[0]; update({}, { plugin_id: event.target.value, tool_name: tool?.name ?? "", parameters: Object.fromEntries(Object.keys(tool?.parameters ?? {}).map((key) => [key, key === "text" || key === "json" ? "{input}" : ""])) }); }}><option value="">请选择插件</option>{installed.map((item) => <option key={item.manifest.plugin_id} value={item.manifest.plugin_id}>{item.manifest.name}</option>)}</select><label>工具</label><select value={String(node.config.tool_name ?? "")} onChange={(event) => { const tool = activePlugin?.manifest.tools.find((item) => item.name === event.target.value); update({}, { tool_name: event.target.value, parameters: Object.fromEntries(Object.keys(tool?.parameters ?? {}).map((key) => [key, key === "text" || key === "json" ? "{input}" : ""])) }); }}>{activePlugin?.manifest.tools.map((tool) => <option key={tool.name} value={tool.name}>{tool.label}</option>)}</select>{activeTool && Object.entries(activeTool.parameters).map(([key, schema]) => <div key={key}><label>{key}{schema.required ? " *" : ""}</label><input value={String((node.config.parameters as Record<string, unknown> | undefined)?.[key] ?? "")} onChange={(event) => update({}, { parameters: { ...(node.config.parameters as Record<string, unknown> ?? {}), [key]: event.target.value } })} placeholder={key === "text" || key === "json" ? "{input}" : ""} /></div>)}{!installed.length && <p className="inspector-hint">请先到插件市场安装并启用 Tool 插件。</p>}</>}
     {node.type === "tool" && node.config.runtime === "dify" && <div className="dify-node-config"><p className="inspector-hint">Daemon 插件：<code>{String(node.config.plugin_id)}</code> / <code>{String(node.config.tool_name)}</code></p>{Object.keys(difyCredentialSchema).length > 0 && <div className="dify-credentials"><strong>插件授权</strong><small>凭据用于调用插件，不会显示在运行日志中。</small>{Object.entries(difyCredentialSchema).map(([key, schema]) => <div key={key}><label>{schema.label || key}{schema.required ? " *" : ""}</label><input type={schema.type?.includes("secret") ? "password" : "text"} value={String((node.config.credentials as Record<string, unknown> ?? {})[key] ?? "")} onChange={(event) => update({}, { credential_schema: difyCredentialSchema, credentials: { ...(node.config.credentials as Record<string, unknown> ?? {}), [key]: event.target.value } })} placeholder={`请输入 ${schema.label || key}`} /></div>)}</div>}{Object.entries(node.config.parameters as Record<string, unknown> ?? {}).map(([key, value]) => <div key={key}><label>{key}</label><input value={String(value ?? "")} onChange={(event) => update({}, { parameters: { ...(node.config.parameters as Record<string, unknown> ?? {}), [key]: event.target.value } })} placeholder="可使用 {input}" /></div>)}</div>}
+    {node.type === "tool" && <ToolVariablePicker parameters={node.config.parameters as Record<string, unknown> ?? {}} nodes={variables} currentId={node.id} onChange={(parameters) => update({}, { parameters })} />}
     {node.type === "answer" && <p className="inspector-hint">把所有上游节点完成后的值作为最终回答。</p>}
     {node.type !== "start" && <button className="danger-button" onClick={remove}>删除节点</button>}
   </div>;
