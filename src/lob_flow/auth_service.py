@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import time
+import psycopg
 from datetime import timedelta
 from uuid import uuid4
 
@@ -151,6 +153,18 @@ class AuthService:
         if not authorization.startswith("Bearer "):
             raise AuthenticationError("缺少管理端身份令牌")
         digest = self._hash(authorization[7:].strip())
+        last_error: psycopg.OperationalError | None = None
+        for attempt in range(3):
+            try:
+                return self._authenticate_once(digest)
+            except psycopg.OperationalError as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.25 * (attempt + 1))
+        assert last_error is not None
+        raise last_error
+
+    def _authenticate_once(self, digest: str) -> User:
         with self.database.connect() as connection:
             row = connection.execute(
                 """SELECT users.* FROM user_sessions

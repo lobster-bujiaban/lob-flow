@@ -81,16 +81,12 @@ def create_app(database: Database | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        database.initialize()
-        try:
-            workflow_service.recover_interrupted_runs()
-        except psycopg.OperationalError:
-            logger.warning("PostgreSQL unavailable during interrupted-run recovery; deferring until next startup", exc_info=True)
         schedule_worker.start()
         try:
             yield
         finally:
             schedule_worker.stop()
+            database.close()
 
     application = FastAPI(title="LOB Flow", version="0.1.0", lifespan=lifespan)
     application.add_middleware(
@@ -131,6 +127,13 @@ def create_app(database: Database | None = None) -> FastAPI:
             return JSONResponse(status_code=401, content={"detail": str(exc)})
         except PermissionDeniedError as exc:
             return JSONResponse(status_code=403, content={"detail": str(exc)})
+        except psycopg.OperationalError:
+            logger.warning("PostgreSQL unavailable during request authentication", exc_info=True)
+            return JSONResponse(
+                status_code=503,
+                headers={"Retry-After": "1"},
+                content={"detail": "PostgreSQL 连接暂时中断，认证请求重试后仍未恢复。"},
+            )
 
     @application.exception_handler(NotFoundError)
     async def not_found_handler(_, exc: NotFoundError):
@@ -169,6 +172,19 @@ def create_app(database: Database | None = None) -> FastAPI:
     @application.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @application.get("/ready")
+    def readiness() -> Response:
+        try:
+            with database.connect() as connection:
+                connection.execute("SELECT 1")
+            return JSONResponse(status_code=200, content={"status": "ready"})
+        except psycopg.OperationalError:
+            return JSONResponse(
+                status_code=503,
+                headers={"Retry-After": "1"},
+                content={"status": "unavailable", "detail": "PostgreSQL 暂时不可用"},
+            )
 
     @application.post("/api/auth/login", response_model=AuthSession)
     def login(request: UserLogin) -> AuthSession:

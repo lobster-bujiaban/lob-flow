@@ -85,6 +85,7 @@
 uv sync
 cp .env.example .env
 # 在 .env 中填写 PGPASSWORD
+uv run lob-flow migrate
 uv run lob-flow create-workspace "演示空间"
 uv run lob-flow create-app <workspace_id> "客服助手"
 uv run lob-flow run <app_id> "如何申请退款？"
@@ -96,6 +97,8 @@ uv run lob-flow serve
 <http://127.0.0.1:8000/docs>。前端开发可在 `web/` 执行 `npm run dev`，访问
 <http://127.0.0.1:5173>，Vite 会将 `/api` 代理到后端。项目直接使用 PostgreSQL，并将表放在独立的
 `lob_flow` Schema 中；连接参数从 `.env` 或标准 `PG*` 环境变量读取，密码不得提交。
+生产部署必须先单独执行 `uv run lob-flow migrate`，成功后再启动 `uv run lob-flow serve`；服务启动本身不运行迁移，避免远程数据库短时中断导致进程退出。`/health` 用于存活检查，`/ready` 用于数据库就绪检查。
+服务使用惰性 PostgreSQL 连接池，默认最小连接数为 2、最大连接数为 10；可通过 `PGPOOL_MIN_SIZE` 和 `PGPOOL_MAX_SIZE` 调整。连接池会检查失效连接并自动补充，服务退出时统一关闭。
 
 管理端不开放自主注册。数据库中没有生产账户时，登录页只允许首位用户完成平台初始化，
 该用户自动成为超级管理员；之后注册入口关闭，其他用户只能通过超管生成的三天有效邀请链接

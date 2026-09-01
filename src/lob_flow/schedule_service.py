@@ -186,9 +186,17 @@ class ScheduleWorker:
             self._thread.join(timeout=self.interval_seconds + 1)
 
     def _run(self) -> None:
+        failures = 0
+        try:
+            self.service.workflow_service.recover_interrupted_runs()
+        except Exception as exc:
+            logger.warning("Interrupted-run recovery deferred: %s", exc)
         while not self._stop.is_set():
             try:
                 self.service.run_due()
-            except Exception:
-                logger.exception("Schedule worker polling failed")
-            self._stop.wait(self.interval_seconds)
+                failures = 0
+            except Exception as exc:
+                failures += 1
+                logger.warning("Schedule worker polling deferred: %s", exc)
+            delay = min(self.interval_seconds * (2 ** min(failures, 4)), 60)
+            self._stop.wait(delay)

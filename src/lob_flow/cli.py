@@ -26,6 +26,8 @@ def main() -> None:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
 
+    subparsers.add_parser("migrate", help="apply production database migrations")
+
     create_admin = subparsers.add_parser("create-admin", help="provision a platform super administrator")
     create_admin.add_argument("email")
     create_admin.add_argument("--name", default="平台管理员")
@@ -44,6 +46,11 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "serve":
         uvicorn.run(create_app(), host=args.host, port=args.port)
+        return
+
+    if args.command == "migrate":
+        Database.from_env().initialize()
+        print("数据库迁移已完成")
         return
 
     if args.command == "create-admin":
