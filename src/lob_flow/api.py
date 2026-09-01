@@ -240,7 +240,7 @@ def create_app(database: Database | None = None) -> FastAPI:
         return dify_daemon.normalized_tools(workspace_id)
 
     @application.get("/api/dify-marketplace/plugins")
-    def explore_dify_marketplace(q: str = "", limit: int = 60) -> list[dict]:
+    def explore_dify_marketplace(q: str = "", limit: int = 200) -> list[dict]:
         return dify_marketplace.explore(q, limit)
 
     @application.get("/api/dify-marketplace/icons/{icon_path:path}", response_model=None)

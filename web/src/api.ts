@@ -75,7 +75,7 @@ export const api = {
   listDifyTools: (workspaceId: string) =>
     request<DifyToolProvider[]>(`/api/workspaces/${workspaceId}/dify-tools`),
   exploreMarketplace: (query = "") =>
-    request<Array<{ org: string; name: string; label: string; description: string; category: string; icon_url: string; install_count: number; verified: boolean; version: string; identifier: string; updated_at: string }>>(`/api/dify-marketplace/plugins?q=${encodeURIComponent(query)}&limit=36`),
+    request<Array<{ org: string; name: string; label: string; description: string; category: string; icon_url: string; install_count: number; verified: boolean; version: string; identifier: string; updated_at: string }>>(`/api/dify-marketplace/plugins?q=${encodeURIComponent(query)}&limit=200`),
   installMarketplacePlugin: (workspaceId: string, identifier: string) =>
     request<{ identifier: string; installation: unknown }>(`/api/workspaces/${workspaceId}/dify-marketplace/install`, {
       method: "POST", body: JSON.stringify({ identifier })

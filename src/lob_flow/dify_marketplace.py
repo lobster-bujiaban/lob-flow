@@ -23,7 +23,7 @@ class DifyMarketplaceClient:
         else:
             preferred = [item for item in plugins if item.get("org") == "langgenius"]
             plugins = preferred + [item for item in plugins if item.get("org") != "langgenius"]
-        selected = plugins[: max(1, min(limit, 60))]
+        selected = plugins[: max(1, min(limit, 200))]
         details = self._batch_details([f"{item.get('org', '')}/{item.get('name', '')}" for item in selected])
         detail_map = {item.get("plugin_id"): item for item in details}
         result = []
