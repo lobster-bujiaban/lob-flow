@@ -97,6 +97,15 @@ API 限流与配额、统一 Trace、成本分析、评测集、独立 Worker/�
 
 ## 快速开始
 
+首次部署时，先由 PostgreSQL 管理员创建应用数据库和最小权限账号：
+
+```bash
+psql -h <host> -U postgres -d postgres \
+  -v app_password='<strong-password>' -f deploy/postgres-init.sql
+```
+
+脚本不保存固定密码且可重复执行；再次执行会将 `lob_flow` 账号更新为本次传入的密码。随后将相同密码写入本地 `.env`，再执行迁移和启动命令：
+
 ```bash
 uv sync
 cp .env.example .env
